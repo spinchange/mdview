@@ -3,7 +3,12 @@ name = "viewer-shell"
 version = "0.1.0"
 edition = "2021"
 
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
 [dependencies]
+tauri = { version = "2", features = [] }
+notify = "6"
 md-engine = { path = "../../../crates/md-engine" }
 line-index = { path = "../../../crates/line-index" }
 settings-store = { path = "../../../crates/settings-store" }

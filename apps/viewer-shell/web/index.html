@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mdview</title>
+    <style id="mdview-theme-tokens"></style>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--mdv-bg, #1e1e1e);
+        color: var(--mdv-text, #f3f3f3);
+        font-family: "Segoe UI", "Inter", sans-serif;
+      }
+
+      #app {
+        min-height: 100%;
+        padding: 24px;
+      }
+
+      .mdv-shell {
+        display: grid;
+        grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+        gap: 24px;
+      }
+
+      .mdv-toc {
+        position: sticky;
+        top: 16px;
+        align-self: start;
+        background: var(--mdv-surface, #252526);
+        border: 1px solid var(--mdv-border, #3c3c3c);
+        border-radius: 10px;
+        padding: 12px;
+      }
+
+      .mdv-toc__title {
+        margin: 0 0 10px;
+        font-size: 14px;
+        letter-spacing: 0.02em;
+      }
+
+      .mdv-toc__list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .mdv-toc__item + .mdv-toc__item {
+        margin-top: 6px;
+      }
+
+      .mdv-toc__link {
+        color: var(--mdv-text, #f3f3f3);
+        text-decoration: none;
+      }
+
+      .mdv-toc__link:hover {
+        color: var(--mdv-accent, #0a84ff);
+      }
+
+      .mdv-content {
+        max-width: 860px;
+        line-height: 1.65;
+      }
+
+      .mdv-content h1,
+      .mdv-content h2,
+      .mdv-content h3,
+      .mdv-content h4,
+      .mdv-content h5,
+      .mdv-content h6 {
+        scroll-margin-top: 16px;
+      }
+
+      .mdv-empty {
+        opacity: 0.85;
+        font-style: italic;
+      }
+
+      @media (max-width: 900px) {
+        .mdv-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .mdv-toc {
+          position: static;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app">mdview bootstrap</main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

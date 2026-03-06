@@ -18,6 +18,8 @@ Windows-specific behavior is a first-class requirement:
 - Register `.md` and `.markdown` for per-user install by default.
 - `--all-users` installer mode available for enterprise contexts.
 - On open, pass full file path to shell and load immediately.
+- Shell captures launch args and exposes startup file contents via `read_launch_markdown`.
+- Rust watcher emits `mdview://file-changed` after debounced filesystem updates (~100ms) for live reload.
 
 ## Theme + Accent Sync
 - `win-theme-watcher` publishes:
@@ -25,12 +27,15 @@ Windows-specific behavior is a first-class requirement:
   - accent color changes.
 - Frontend consumes normalized token payload and updates CSS variables.
 - Shared token model lives in `base-styles` to keep parity with preview host.
+- Tauri shell emits `mdview://theme-updated` with CSS variable payload whenever tokens change.
+- Frontend should register the event listener first, then invoke `get_initial_theme_css` for deterministic first-theme application.
 
 ## Explorer Preview Handler
 - Implement as separate COM DLL (`win-preview-handler`).
 - Host process is `prevhost.exe`; component must remain stateless.
 - Share parser and theme token outputs with main app crates.
 - COM registration handled in code via `windows-rs`.
+- Dev registration helper: `scripts/register-dev.ps1` (supports `-Unregister`).
 
 ## WebView2 Runtime Policy
 - Use Evergreen runtime.

@@ -8,6 +8,7 @@ dist/
 
 # Tauri
 src-tauri/target/
+apps/viewer-shell/src-tauri/gen/
 
 # IDE / OS
 .DS_Store
