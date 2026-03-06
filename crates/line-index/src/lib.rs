@@ -1,0 +1,1 @@
+﻿//! line-index crate scaffold.

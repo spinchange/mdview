@@ -1,0 +1,12 @@
+[package]
+name = "viewer-shell"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+md-engine = { path = "../../../crates/md-engine" }
+line-index = { path = "../../../crates/line-index" }
+settings-store = { path = "../../../crates/settings-store" }
+base-styles = { path = "../../../crates/base-styles" }
+win-theme-watcher = { path = "../../../crates/win-theme-watcher" }
+win-file-assoc = { path = "../../../crates/win-file-assoc" }

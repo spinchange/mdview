@@ -1,0 +1,1 @@
+﻿//! settings-store crate scaffold.

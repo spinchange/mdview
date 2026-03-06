@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+  "apps/viewer-shell/src-tauri",
+  "crates/md-engine",
+  "crates/line-index",
+  "crates/settings-store",
+  "crates/base-styles",
+  "crates/win-preview-handler",
+  "crates/win-file-assoc",
+  "crates/win-theme-watcher",
+]

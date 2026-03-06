@@ -1,0 +1,1 @@
+# MSIX packaging entrypoint.
