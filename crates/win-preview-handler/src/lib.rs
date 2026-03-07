@@ -11,6 +11,7 @@ mod preview_handler {
 
     use base_styles::tokens_from_snapshot;
     use md_engine::MarkdownEngine;
+    use settings_store::resolve_theme_snapshot;
     use webview2_com::{
         CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler,
         CreateCoreWebView2EnvironmentCompletedHandler, Microsoft::Web::WebView2::Win32::*,
@@ -260,7 +261,7 @@ mod preview_handler {
     }
 
     fn render_preview_page(path: &str) -> String {
-        let css_vars = tokens_from_snapshot(&current_snapshot()).to_css_vars();
+        let css_vars = resolved_theme_tokens().to_css_vars();
         let shell_css = "html,body{margin:0;padding:0;background:var(--mdv-bg,#1E1E1E);color:var(--mdv-text,#F3F3F3);font-family:\"Segoe UI\",sans-serif;}.mdv-content{padding:16px;line-height:1.6;}a{color:var(--mdv-accent,#0A84FF);}code,pre{background:var(--mdv-code-bg,#2D2D2D);border-radius:6px;}pre{padding:10px;overflow:auto;}table{border-collapse:collapse;}th,td{border:1px solid var(--mdv-border,#3C3C3C);padding:6px 8px;}.mdv-error{margin:16px;padding:14px 16px;border:1px solid var(--mdv-border,#3C3C3C);border-radius:10px;background:var(--mdv-surface,#252526);}.mdv-error h1{margin:0 0 8px;font-size:18px;}.mdv-error p{margin:0 0 8px;}.mdv-error pre{margin:0;white-space:pre-wrap;word-break:break-word;}";
 
         match fs::read_to_string(path) {
@@ -291,7 +292,7 @@ mod preview_handler {
     }
 
     fn paint_parent_background(parent_hwnd: HWND) {
-        let tokens = tokens_from_snapshot(&current_snapshot());
+        let tokens = resolved_theme_tokens();
         let Some(color) = parse_hex_rgb_colorref(&tokens.bg) else {
             return;
         };
@@ -317,6 +318,11 @@ mod preview_handler {
 
             let _ = ReleaseDC(Some(parent_hwnd), dc);
         }
+    }
+
+    fn resolved_theme_tokens() -> base_styles::ThemeTokens {
+        let snapshot = resolve_theme_snapshot(current_snapshot());
+        tokens_from_snapshot(&snapshot)
     }
 
     fn parse_hex_rgb_colorref(value: &str) -> Option<COLORREF> {

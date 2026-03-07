@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 base-styles = { path = "../base-styles" }
 md-engine = { path = "../md-engine" }
+settings-store = { path = "../settings-store" }
 webview2-com = "0.38.2"
 win-theme-watcher = { path = "../win-theme-watcher" }
 windows = { version = "0.61.3", features = [

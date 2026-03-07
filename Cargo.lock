@@ -3211,6 +3211,11 @@ dependencies = [
 [[package]]
 name = "settings-store"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "win-theme-watcher",
+]
 
 [[package]]
 name = "sha2"
@@ -4205,7 +4210,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "viewer-shell"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "base-styles",
  "line-index",
@@ -4215,6 +4220,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "win-file-assoc",
+ "win-installer",
  "win-theme-watcher",
 ]
 
@@ -4488,11 +4494,19 @@ name = "win-file-assoc"
 version = "0.1.0"
 
 [[package]]
+name = "win-installer"
+version = "0.1.0"
+dependencies = [
+ "winreg",
+]
+
+[[package]]
 name = "win-preview-handler"
 version = "0.1.0"
 dependencies = [
  "base-styles",
  "md-engine",
+ "settings-store",
  "webview2-com",
  "win-theme-watcher",
  "windows",
@@ -4502,6 +4516,9 @@ dependencies = [
 [[package]]
 name = "win-theme-watcher"
 version = "0.1.0"
+dependencies = [
+ "winreg",
+]
 
 [[package]]
 name = "winapi"

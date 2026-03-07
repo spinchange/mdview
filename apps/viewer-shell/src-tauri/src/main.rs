@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod file_open;
 mod file_watch;
 mod theme_bridge;
@@ -5,6 +7,7 @@ mod window_boot;
 
 use std::sync::Mutex;
 use std::time::Duration;
+use std::{env, process};
 
 use md_engine::{MarkdownEngine, RenderedDocument};
 use tauri::{Emitter, Manager, RunEvent};
@@ -52,7 +55,50 @@ fn shutdown_background_services(app_handle: &tauri::AppHandle) {
     }
 }
 
+fn maybe_handle_shell_registration_args() -> bool {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let wants_register = args.iter().any(|arg| arg == "--register");
+    let wants_unregister = args.iter().any(|arg| arg == "--unregister");
+
+    if !wants_register && !wants_unregister {
+        return false;
+    }
+
+    if wants_register && wants_unregister {
+        eprintln!("[mdview] invalid arguments: choose either --register or --unregister.");
+        process::exit(2);
+    }
+
+    let result = if wants_register {
+        win_installer::register_all()
+    } else {
+        win_installer::unregister_all()
+    };
+
+    match result {
+        Ok(_) => {
+            if wants_register {
+                println!("[mdview] Windows shell integration registered successfully.");
+                println!(
+                    "[mdview] Preview handler and context menu are now active for .md/.markdown files."
+                );
+            } else {
+                println!("[mdview] Windows shell integration removed successfully.");
+            }
+            process::exit(0);
+        }
+        Err(err) => {
+            eprintln!("[mdview] Windows shell integration command failed: {err}");
+            process::exit(1);
+        }
+    }
+}
+
 fn main() {
+    if maybe_handle_shell_registration_args() {
+        return;
+    }
+
     let app = tauri::Builder::default()
         .setup(|app| {
             let launch_path = file_open::detect_launch_path_from_args(std::env::args_os());

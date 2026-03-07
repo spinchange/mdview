@@ -9,4 +9,5 @@ members = [
   "crates/win-preview-handler",
   "crates/win-file-assoc",
   "crates/win-theme-watcher",
+  "crates/win-installer",
 ]

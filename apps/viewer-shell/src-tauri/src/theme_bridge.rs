@@ -1,13 +1,15 @@
 use std::time::Duration;
 
 use base_styles::{tokens_from_snapshot, ThemeTokens};
+use settings_store::resolve_theme_snapshot;
 use win_theme_watcher::{current_snapshot, ThemeWatcher};
 
 pub const THEME_EVENT_NAME: &str = "mdview://theme-updated";
 pub const DEFAULT_THEME_POLL_MS: u64 = 750;
 
 pub fn initial_tokens() -> ThemeTokens {
-    tokens_from_snapshot(&current_snapshot())
+    let snapshot = resolve_theme_snapshot(current_snapshot());
+    tokens_from_snapshot(&snapshot)
 }
 
 pub fn start_theme_sync<F>(poll_interval: Duration, emit: F) -> ThemeWatcher
@@ -15,7 +17,8 @@ where
     F: Fn(ThemeTokens) + Send + 'static,
 {
     ThemeWatcher::start(poll_interval, move |snapshot| {
-        let tokens = tokens_from_snapshot(&snapshot);
+        let resolved = resolve_theme_snapshot(snapshot);
+        let tokens = tokens_from_snapshot(&resolved);
         emit(tokens);
     })
 }

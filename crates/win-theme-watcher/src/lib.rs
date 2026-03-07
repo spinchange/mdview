@@ -1,7 +1,11 @@
-use std::process::Command;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+#[cfg(windows)]
+use winreg::enums::HKEY_CURRENT_USER;
+#[cfg(windows)]
+use winreg::RegKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -86,7 +90,7 @@ where
 
 fn detect_mode() -> Option<ThemeMode> {
     let output = query_reg_dword(
-        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
         "AppsUseLightTheme",
     )?;
 
@@ -101,14 +105,14 @@ fn detect_mode() -> Option<ThemeMode> {
 fn detect_accent_rgb() -> Option<u32> {
     // Prefer Explorer accent since it usually matches user-selected accent more directly.
     if let Some(value) = query_reg_dword(
-        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
         "AccentColorMenu",
     ) {
         return Some(argb_to_rgb(value));
     }
 
     // Fallback to DWM colorization.
-    query_reg_dword(r"HKCU\Software\Microsoft\Windows\DWM", "ColorizationColor")
+    query_reg_dword(r"Software\Microsoft\Windows\DWM", "ColorizationColor")
         .map(argb_to_rgb)
 }
 
@@ -116,41 +120,21 @@ fn argb_to_rgb(value: u32) -> u32 {
     value & 0x00FF_FFFF
 }
 
+#[cfg(windows)]
 fn query_reg_dword(key: &str, value_name: &str) -> Option<u32> {
-    let output = Command::new("reg")
-        .args(["query", key, "/v", value_name])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    parse_reg_dword_output(&String::from_utf8_lossy(&output.stdout), value_name)
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let subkey = hkcu.open_subkey(key).ok()?;
+    subkey.get_value::<u32, _>(value_name).ok()
 }
 
-fn parse_reg_dword_output(output: &str, value_name: &str) -> Option<u32> {
-    output.lines().find_map(|line| {
-        if !line.contains(value_name) || !line.contains("REG_DWORD") {
-            return None;
-        }
-
-        let raw_value = line.split_whitespace().last()?;
-        let normalized = raw_value.trim_start_matches("0x");
-        u32::from_str_radix(normalized, 16).ok()
-    })
+#[cfg(not(windows))]
+fn query_reg_dword(_key: &str, _value_name: &str) -> Option<u32> {
+    None
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_reg_dword_output, ThemeMode};
-
-    #[test]
-    fn parses_reg_dword_hex_value() {
-        let text = "    AppsUseLightTheme    REG_DWORD    0x0";
-        let value = parse_reg_dword_output(text, "AppsUseLightTheme");
-        assert_eq!(value, Some(0));
-    }
+    use super::{argb_to_rgb, ThemeMode};
 
     #[test]
     fn mode_mapping_is_stable() {
@@ -166,5 +150,10 @@ mod tests {
         };
         assert!(matches!(dark, ThemeMode::Dark));
         assert!(matches!(light, ThemeMode::Light));
+    }
+
+    #[test]
+    fn strips_alpha_channel_from_argb() {
+        assert_eq!(argb_to_rgb(0xAA112233), 0x00112233);
     }
 }
