@@ -32,6 +32,45 @@ async function renderCurrentDocument(app: HTMLElement): Promise<void> {
   renderDocument(app, rendered);
 }
 
+function mountDefaultAppsHelper(container: HTMLElement): void {
+  const panel = document.createElement("section");
+  panel.style.marginBottom = "16px";
+  panel.style.padding = "10px 12px";
+  panel.style.border = "1px solid var(--mdv-border, #3c3c3c)";
+  panel.style.borderRadius = "10px";
+  panel.style.background = "var(--mdv-surface, #252526)";
+  panel.style.display = "flex";
+  panel.style.alignItems = "center";
+  panel.style.justifyContent = "space-between";
+  panel.style.gap = "12px";
+
+  const copy = document.createElement("p");
+  copy.textContent = "Set mdview as the default app for .md and .markdown.";
+  copy.style.margin = "0";
+  copy.style.fontSize = "13px";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Set as default";
+  button.style.padding = "7px 11px";
+  button.style.borderRadius = "8px";
+  button.style.border = "1px solid var(--mdv-border, #3c3c3c)";
+  button.style.background = "var(--mdv-bg, #1e1e1e)";
+  button.style.color = "var(--mdv-text, #f3f3f3)";
+  button.style.cursor = "pointer";
+  button.addEventListener("click", async () => {
+    try {
+      await invoke("open_default_apps_settings");
+    } catch (error) {
+      console.error("[mdview] failed to open default apps settings", error);
+    }
+  });
+
+  panel.appendChild(copy);
+  panel.appendChild(button);
+  container.appendChild(panel);
+}
+
 function isTauriRuntimeAvailable(): boolean {
   const w = window as Window & {
     __TAURI_INTERNALS__?: unknown;
@@ -84,6 +123,8 @@ async function bootstrapThemeBridge(): Promise<void> {
   if (!(app instanceof HTMLElement)) {
     throw new Error("missing #app container");
   }
+
+  mountDefaultAppsHelper(app);
 
   const unlistenFileChanged = await listen(FILE_CHANGED_EVENT, async () => {
     try {

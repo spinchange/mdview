@@ -1,33 +1,63 @@
 # mdview
 
-Windows-first, open source Markdown viewer with a deliberate native feel.
+Windows-first Markdown viewer with native shell integration.
 
-## Product Position
-- Viewer first in Phase 1.
-- Feature-limited editor in Phase 2 (`Quick Edit`, not an IDE).
-- Tauri shell with Windows-specific integrations as core requirements.
+## About
+`mdview` is focused on fast, clean markdown reading on Windows, with Explorer integration built in:
+- native-feeling startup (no flash gate),
+- live theme/accent sync,
+- Explorer Preview Pane rendering via COM preview handler,
+- Open With / context menu / default-app registration helpers.
 
-## Non-Negotiable UX Targets
-- Double-clicking a `.md` file opens quickly with no white flash.
-- App follows Windows theme + accent updates automatically.
-- File Explorer Preview Pane shows markdown without launching the full app.
-- Viewer never blocks external editors with exclusive file locks.
+This project is currently in `v0.1.0-beta.1`.
+
+## Current Capabilities
+- Markdown rendering pipeline (`md-engine`, comrak-based, source position aware).
+- Tauri desktop shell + frontend viewer UI.
+- Explorer Preview Handler using WebView2, with resilient fallback pages.
+- Relative asset support in preview via virtual host folder mapping.
+- Shared config-backed theme resolution (`%APPDATA%\\mdview\\config.json`).
+- Native registration commands:
+  - `--register`
+  - `--unregister`
+
+## Build
+From repository root:
+
+```powershell
+cargo check --workspace
+```
+
+Release app packaging:
+
+```powershell
+cd apps/viewer-shell/src-tauri
+cargo tauri build
+```
+
+Primary release binary:
+
+`target\\release\\viewer-shell.exe`
+
+## First Run
+Register shell integration:
+
+```powershell
+target\release\viewer-shell.exe --register
+```
+
+This registers:
+- Preview Handler for `.md` / `.markdown`
+- Context menu verb (`Open with mdview`)
+- Open With + Default Apps capability metadata
+
+After register, set defaults in Windows Settings for `.md` and `.markdown` (mdview opens this page automatically when possible).
 
 ## Repository Layout
-- `apps/viewer-shell`: Tauri shell and frontend.
-- `crates/md-engine`: markdown parse/render pipeline rules shared by app + preview.
-- `crates/base-styles`: shared theme token generation and base CSS.
-- `crates/win-preview-handler`: COM preview handler for Explorer Preview Pane.
-- `crates/line-index`: heading/source line mapping for Viewer -> Editor jump.
-- `docs`: architecture, windows integration, ADRs.
-
-## Phase Plan
-1. Native shell foundation (`no-flash` startup, file association, core viewer).
-2. Windows-native polish (theme/accent sync, file watching, TOC/search/export).
-3. Preview handler milestone (COM DLL + installer registration).
-4. Limited editor (`Quick Edit`, Save/Undo/Redo/Find/Replace, Jump to Line).
-
-## Status
-- Scaffold created.
-- Architecture docs and ADRs drafted.
-- Next: implement workspace crates and boot Tauri app shell.
+- `apps/viewer-shell`: Tauri shell + web UI.
+- `crates/md-engine`: markdown parse/render pipeline.
+- `crates/base-styles`: theme token to CSS variables bridge.
+- `crates/win-preview-handler`: Explorer Preview Pane COM handler.
+- `crates/win-installer`: native registry registration/unregistration logic.
+- `crates/settings-store`: shared app config and theme preference resolution.
+- `docs`: architecture notes, ADRs, and release notes.

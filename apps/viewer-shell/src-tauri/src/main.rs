@@ -8,6 +8,7 @@ mod window_boot;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::{env, process};
+use std::process::Command;
 
 use md_engine::{MarkdownEngine, RenderedDocument};
 use tauri::{Emitter, Manager, RunEvent};
@@ -25,6 +26,25 @@ fn get_initial_theme_css() -> String {
 #[tauri::command]
 fn render_markdown(markdown: String) -> RenderedDocument {
     MarkdownEngine::default().render(&markdown)
+}
+
+#[tauri::command]
+fn open_default_apps_settings() -> Result<(), String> {
+    open_default_apps_settings_impl()
+}
+
+#[cfg(windows)]
+fn open_default_apps_settings_impl() -> Result<(), String> {
+    Command::new("explorer.exe")
+        .arg("ms-settings:defaultapps")
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("failed to open Default Apps settings: {err}"))
+}
+
+#[cfg(not(windows))]
+fn open_default_apps_settings_impl() -> Result<(), String> {
+    Err("Default Apps shortcut is only available on Windows".to_string())
 }
 
 fn shutdown_background_services(app_handle: &tauri::AppHandle) {
@@ -82,6 +102,16 @@ fn maybe_handle_shell_registration_args() -> bool {
                 println!(
                     "[mdview] Preview handler and context menu are now active for .md/.markdown files."
                 );
+                match open_default_apps_settings_impl() {
+                    Ok(_) => {
+                        println!(
+                            "[mdview] Opened Default Apps settings. Set mdview for .md and .markdown."
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("[mdview] Could not open Default Apps settings automatically: {err}");
+                    }
+                }
             } else {
                 println!("[mdview] Windows shell integration removed successfully.");
             }
@@ -153,7 +183,8 @@ fn main() {
             file_open::read_markdown_file,
             window_boot::window_ready,
             get_initial_theme_css,
-            render_markdown
+            render_markdown,
+            open_default_apps_settings
         ])
         .build(tauri::generate_context!())
         .expect("failed to build mdview shell");
