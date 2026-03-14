@@ -1,0 +1,18 @@
+{
+  "name": "mdview",
+  "private": true,
+  "devDependencies": {
+    "@codemirror/lang-markdown": "^6.3.4",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/theme-one-dark": "^6.1.3",
+    "@codemirror/view": "^6.38.6",
+    "@playwright/test": "^1.54.2",
+    "@tauri-apps/api": "^2.8.0",
+    "codemirror": "^6.0.1",
+    "esbuild": "^0.25.1"
+  },
+  "scripts": {
+    "build:web": "node scripts/build-web.mjs",
+    "test:e2e": "playwright test"
+  }
+}

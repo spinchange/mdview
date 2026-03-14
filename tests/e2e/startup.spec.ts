@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { installTauriMock } from "./support/tauri-mock";
 
 const FRAME_SAMPLE_COUNT = 24;
 const WHITE_THRESHOLD = 245;
@@ -28,6 +29,7 @@ function isNearWhite(rgb: Rgb): boolean {
 
 test.describe("startup no-flash guard", () => {
   test("does not render a near-white frame during initial boot", async ({ page }) => {
+    await installTauriMock(page);
     await page.addInitScript(
       ({ frameSampleCount }) => {
         const frames: string[] = [];
@@ -51,7 +53,7 @@ test.describe("startup no-flash guard", () => {
     );
 
     // Replace with Tauri dev URL once the frontend bootstrap is in place.
-    await page.goto("http://localhost:1420", { waitUntil: "domcontentloaded" });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(450);
 
     const rawFrames = (await page.evaluate(

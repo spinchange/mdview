@@ -181,6 +181,7 @@ fn main() {
             file_open::get_launch_path,
             file_open::read_launch_markdown,
             file_open::read_markdown_file,
+            file_open::write_launch_markdown,
             window_boot::window_ready,
             get_initial_theme_css,
             render_markdown,
