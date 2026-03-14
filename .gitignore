@@ -5,6 +5,9 @@
 # Node/web
 node_modules/
 dist/
+!apps/viewer-shell/web/dist/
+!apps/viewer-shell/web/dist/app.js
+!apps/viewer-shell/web/dist/index.html
 
 # Tauri
 src-tauri/target/
@@ -14,3 +17,4 @@ apps/viewer-shell/src-tauri/gen/
 .DS_Store
 Thumbs.db
 .vscode/
+test-results/

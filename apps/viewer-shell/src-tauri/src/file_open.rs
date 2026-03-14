@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fs::OpenOptions;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use tauri::State;
@@ -61,6 +61,17 @@ pub fn read_markdown_file(path: String) -> Result<String, String> {
     read_markdown_file_impl(Path::new(&path))
 }
 
+#[tauri::command]
+pub fn write_launch_markdown(
+    state: State<'_, LaunchPathState>,
+    markdown: String,
+) -> Result<(), String> {
+    let path = state
+        .path_clone()
+        .ok_or_else(|| "no launch markdown file is active".to_string())?;
+    write_markdown_file_impl(&path, &markdown)
+}
+
 fn read_markdown_file_impl(path: &Path) -> Result<String, String> {
     if !path.exists() {
         return Err(format!("file not found: {}", path.display()));
@@ -75,6 +86,28 @@ fn read_markdown_file_impl(path: &Path) -> Result<String, String> {
     file.read_to_string(&mut content)
         .map_err(|e| format!("failed to read utf-8 markdown: {e}"))?;
     Ok(content)
+}
+
+fn write_markdown_file_impl(path: &Path, content: &str) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("file not found: {}", path.display()));
+    }
+
+    if path.is_dir() {
+        return Err(format!("path is a directory: {}", path.display()));
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|e| format!("failed to open file for write: {e}"))?;
+
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("failed to write markdown file: {e}"))?;
+    file.flush()
+        .map_err(|e| format!("failed to flush markdown file: {e}"))?;
+    Ok(())
 }
 
 #[cfg(windows)]

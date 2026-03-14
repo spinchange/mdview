@@ -13,6 +13,11 @@ export type RenderedDocument = {
   is_blank: boolean;
 };
 
+export type RenderDocumentOptions = {
+  quickEditEnabled?: boolean;
+  onJumpToLine?: (lineNumber: number) => void;
+};
+
 function slugify(value: string): string {
   return value
     .toLowerCase()
@@ -58,7 +63,10 @@ function annotateHeadingNodes(root: ParentNode, headings: HeadingSpan[]): void {
   }
 }
 
-function buildToc(headings: HeadingSpan[]): HTMLElement {
+function buildToc(
+  headings: HeadingSpan[],
+  options: RenderDocumentOptions
+): HTMLElement {
   const nav = document.createElement("nav");
   nav.className = "mdv-toc";
   nav.setAttribute("aria-label", "Table of contents");
@@ -86,6 +94,13 @@ function buildToc(headings: HeadingSpan[]): HTMLElement {
     link.href = `#${id}`;
     link.textContent = heading.text || `Heading ${index + 1}`;
     link.setAttribute("data-line-start", String(heading.line_start));
+    if (options.quickEditEnabled) {
+      link.title = `Jump to line ${heading.line_start} in editor`;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        options.onJumpToLine?.(heading.line_start);
+      });
+    }
 
     item.appendChild(link);
     list.appendChild(item);
@@ -95,13 +110,17 @@ function buildToc(headings: HeadingSpan[]): HTMLElement {
   return nav;
 }
 
-export function renderDocument(container: HTMLElement, doc: RenderedDocument): void {
+export function renderDocument(
+  container: HTMLElement,
+  doc: RenderedDocument,
+  options: RenderDocumentOptions = {}
+): void {
   container.innerHTML = "";
 
   const shell = document.createElement("section");
   shell.className = "mdv-shell";
 
-  const toc = buildToc(doc.headings);
+  const toc = buildToc(doc.headings, options);
   const article = document.createElement("article");
   article.className = "mdv-content";
 
@@ -115,6 +134,27 @@ export function renderDocument(container: HTMLElement, doc: RenderedDocument): v
     template.innerHTML = doc.html;
     annotateHeadingNodes(template.content, doc.headings);
     article.appendChild(template.content.cloneNode(true));
+  }
+
+  if (options.quickEditEnabled) {
+    article.classList.add("mdv-content--jumpable");
+    article.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      const heading = target.closest<HTMLHeadingElement>("h1, h2, h3, h4, h5, h6");
+      if (!heading) {
+        return;
+      }
+
+      const lineStart = Number(heading.getAttribute("data-line-start"));
+      if (Number.isFinite(lineStart) && lineStart > 0) {
+        event.preventDefault();
+        options.onJumpToLine?.(lineStart);
+      }
+    });
   }
 
   shell.appendChild(toc);
