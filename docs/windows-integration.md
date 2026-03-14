@@ -16,7 +16,7 @@ Windows-specific behavior is a first-class requirement:
 
 ## File Association
 - Register `.md` and `.markdown` for per-user install by default.
-- `--all-users` installer mode available for enterprise contexts.
+- `--all-users` installer mode is planned but not implemented yet.
 - On open, pass full file path to shell and load immediately.
 - Shell captures launch args and exposes startup file contents via `read_launch_markdown`.
 - Rust watcher emits `mdview://file-changed` after debounced filesystem updates (~100ms) for live reload.
@@ -35,7 +35,9 @@ Windows-specific behavior is a first-class requirement:
 - Host process is `prevhost.exe`; component must remain stateless.
 - Share parser and theme token outputs with main app crates.
 - COM registration handled in code via `windows-rs`.
+- Current install assumption: `win_preview_handler.dll` is deployed beside `viewer-shell.exe`.
 - Dev registration helper: `scripts/register-dev.ps1` (supports `-Unregister`).
+- Explorer may require a restart, or the user may need to sign out and back in, before handler registration changes appear in Preview Pane.
 
 ## WebView2 Runtime Policy
 - Use Evergreen runtime.

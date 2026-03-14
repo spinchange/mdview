@@ -13,6 +13,8 @@
   },
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "package:nsis": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/package-nsis.ps1",
+    "package:nsis:stage": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/package-nsis.ps1 -StageOnly"
   }
 }

@@ -75,18 +75,18 @@ fn shutdown_background_services(app_handle: &tauri::AppHandle) {
     }
 }
 
-fn maybe_handle_shell_registration_args() -> bool {
+fn shell_registration_exit_code() -> Option<i32> {
     let args: Vec<String> = env::args().skip(1).collect();
     let wants_register = args.iter().any(|arg| arg == "--register");
     let wants_unregister = args.iter().any(|arg| arg == "--unregister");
 
     if !wants_register && !wants_unregister {
-        return false;
+        return None;
     }
 
     if wants_register && wants_unregister {
         eprintln!("[mdview] invalid arguments: choose either --register or --unregister.");
-        process::exit(2);
+        return Some(2);
     }
 
     let result = if wants_register {
@@ -115,18 +115,18 @@ fn maybe_handle_shell_registration_args() -> bool {
             } else {
                 println!("[mdview] Windows shell integration removed successfully.");
             }
-            process::exit(0);
+            Some(0)
         }
         Err(err) => {
             eprintln!("[mdview] Windows shell integration command failed: {err}");
-            process::exit(1);
+            Some(1)
         }
     }
 }
 
 fn main() {
-    if maybe_handle_shell_registration_args() {
-        return;
+    if let Some(exit_code) = shell_registration_exit_code() {
+        process::exit(exit_code);
     }
 
     let app = tauri::Builder::default()
