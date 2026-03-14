@@ -32,6 +32,11 @@ export async function installTauriMock(page: Page): Promise<void> {
       nextCallbackId: 1,
     };
 
+    function emit(eventName: string, payload?: unknown) {
+      const handlers = state.listeners.get(eventName);
+      handlers?.forEach((handler) => handler(payload));
+    }
+
     function renderMarkdown(source: string): {
       html: string;
       headings: HeadingSpan[];
@@ -139,6 +144,16 @@ export async function installTauriMock(page: Page): Promise<void> {
 
     Object.defineProperty(window, "__MDVIEW_TEST_STATE__", {
       value: state,
+      configurable: true,
+    });
+
+    Object.defineProperty(window, "__MDVIEW_TEST_API__", {
+      value: {
+        setMarkdown(nextMarkdown: string) {
+          state.markdown = nextMarkdown;
+        },
+        emit,
+      },
       configurable: true,
     });
   }, { markdown: sampleMarkdown });

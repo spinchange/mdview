@@ -92,7 +92,26 @@ fn watch_loop(
     event_rx: Receiver<notify::Result<Event>>,
     target_name: std::ffi::OsString,
 ) {
-    let debounce = Duration::from_millis(WATCH_DEBOUNCE_MS);
+    watch_loop_with_emit(
+        stop_rx,
+        event_rx,
+        target_name,
+        Duration::from_millis(WATCH_DEBOUNCE_MS),
+        || {
+            let _ = app.emit(FILE_CHANGED_EVENT, ());
+        },
+    );
+}
+
+fn watch_loop_with_emit<F>(
+    stop_rx: Receiver<()>,
+    event_rx: Receiver<notify::Result<Event>>,
+    target_name: std::ffi::OsString,
+    debounce: Duration,
+    mut emit_changed: F,
+) where
+    F: FnMut(),
+{
     let mut pending = false;
     let mut next_emit_at = Instant::now();
 
@@ -117,7 +136,7 @@ fn watch_loop(
         }
 
         if pending && Instant::now() >= next_emit_at {
-            let _ = app.emit(FILE_CHANGED_EVENT, ());
+            emit_changed();
             pending = false;
         }
     }
@@ -125,4 +144,74 @@ fn watch_loop(
 
 fn event_targets_file(event: &Event, target_name: &std::ffi::OsString) -> bool {
     event.paths.iter().any(|path| path.file_name() == Some(target_name.as_os_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    use notify::{event::ModifyKind, Event, EventKind};
+
+    use super::{event_targets_file, watch_loop_with_emit};
+
+    fn changed_event(path: &str) -> notify::Result<Event> {
+        Ok(Event {
+            kind: EventKind::Modify(ModifyKind::Any),
+            paths: vec![path.into()],
+            attrs: Default::default(),
+        })
+    }
+
+    #[test]
+    fn matches_events_for_target_file_name() {
+        let event = changed_event("C:\\notes\\sample.md").expect("notify event");
+        assert!(event_targets_file(&event, &OsString::from("sample.md")));
+    }
+
+    #[test]
+    fn ignores_events_for_temp_or_other_files() {
+        let event = changed_event("C:\\notes\\.sample.md.mdview-123.tmp").expect("notify event");
+        assert!(!event_targets_file(&event, &OsString::from("sample.md")));
+    }
+
+    #[test]
+    fn debounces_multiple_target_events_into_single_emit() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let emit_count = Arc::new(AtomicUsize::new(0));
+        let emit_count_for_thread = Arc::clone(&emit_count);
+
+        let worker = thread::spawn(move || {
+            watch_loop_with_emit(
+                stop_rx,
+                event_rx,
+                OsString::from("sample.md"),
+                Duration::from_millis(20),
+                move || {
+                    emit_count_for_thread.fetch_add(1, Ordering::SeqCst);
+                },
+            );
+        });
+
+        event_tx
+            .send(changed_event("C:\\notes\\sample.md"))
+            .expect("send first event");
+        event_tx
+            .send(changed_event("C:\\notes\\sample.md"))
+            .expect("send second event");
+        event_tx
+            .send(changed_event("C:\\notes\\other.md"))
+            .expect("send unrelated event");
+
+        thread::sleep(Duration::from_millis(80));
+        stop_tx.send(()).expect("stop watcher");
+        worker.join().expect("join watcher");
+
+        assert_eq!(emit_count.load(Ordering::SeqCst), 1);
+    }
 }

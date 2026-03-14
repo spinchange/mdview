@@ -18,6 +18,12 @@ export type RenderDocumentOptions = {
   onJumpToLine?: (lineNumber: number) => void;
 };
 
+type ViewerDom = {
+  shell: HTMLElement;
+  toc: HTMLElement;
+  article: HTMLElement;
+};
+
 function slugify(value: string): string {
   return value
     .toLowerCase()
@@ -110,35 +116,61 @@ function buildToc(
   return nav;
 }
 
+function ensureViewerDom(container: HTMLElement): ViewerDom {
+  const existingShell = container.querySelector<HTMLElement>(":scope > .mdv-shell");
+  const existingToc = existingShell?.querySelector<HTMLElement>(":scope > .mdv-toc");
+  const existingArticle = existingShell?.querySelector<HTMLElement>(":scope > .mdv-content");
+
+  if (existingShell && existingToc && existingArticle) {
+    return {
+      shell: existingShell,
+      toc: existingToc,
+      article: existingArticle,
+    };
+  }
+
+  container.replaceChildren();
+
+  const shell = document.createElement("section");
+  shell.className = "mdv-shell";
+
+  const toc = document.createElement("nav");
+  toc.className = "mdv-toc";
+
+  const article = document.createElement("article");
+  article.className = "mdv-content";
+
+  shell.appendChild(toc);
+  shell.appendChild(article);
+  container.appendChild(shell);
+
+  return { shell, toc, article };
+}
+
 export function renderDocument(
   container: HTMLElement,
   doc: RenderedDocument,
   options: RenderDocumentOptions = {}
 ): void {
-  container.innerHTML = "";
+  const { toc, article } = ensureViewerDom(container);
 
-  const shell = document.createElement("section");
-  shell.className = "mdv-shell";
-
-  const toc = buildToc(doc.headings, options);
-  const article = document.createElement("article");
-  article.className = "mdv-content";
-
+  toc.replaceWith(buildToc(doc.headings, options));
   if (doc.is_blank) {
     const empty = document.createElement("p");
     empty.className = "mdv-empty";
     empty.textContent = "This markdown file is empty.";
-    article.appendChild(empty);
+    article.replaceChildren(empty);
   } else {
     const template = document.createElement("template");
     template.innerHTML = doc.html;
     annotateHeadingNodes(template.content, doc.headings);
-    article.appendChild(template.content.cloneNode(true));
+    article.replaceChildren(template.content.cloneNode(true));
   }
 
+  article.classList.toggle("mdv-content--jumpable", !!options.quickEditEnabled);
+  article.onclick = null;
   if (options.quickEditEnabled) {
-    article.classList.add("mdv-content--jumpable");
-    article.addEventListener("click", (event) => {
+    article.onclick = (event) => {
       const target = event.target;
       if (!(target instanceof Element)) {
         return;
@@ -154,10 +186,6 @@ export function renderDocument(
         event.preventDefault();
         options.onJumpToLine?.(lineStart);
       }
-    });
+    };
   }
-
-  shell.appendChild(toc);
-  shell.appendChild(article);
-  container.appendChild(shell);
 }

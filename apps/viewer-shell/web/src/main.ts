@@ -44,7 +44,18 @@ type AppState = {
 };
 
 type AppDomRefs = {
+  app: HTMLElement | null;
+  toolbarMeta: HTMLElement | null;
+  quickEditButton: HTMLButtonElement | null;
+  saveButton: HTMLButtonElement | null;
+  searchButton: HTMLButtonElement | null;
+  contentGrid: HTMLElement | null;
   viewerHost: HTMLElement | null;
+  editorPanel: HTMLElement | null;
+  editorHint: HTMLElement | null;
+  editorSurface: HTMLElement | null;
+  editorMessage: HTMLElement | null;
+  searchPanelHost: HTMLElement | null;
   statusPill: HTMLElement | null;
   previewPill: HTMLElement | null;
 };
@@ -79,7 +90,18 @@ const appState: AppState = {
 };
 
 const domRefs: AppDomRefs = {
+  app: null,
+  toolbarMeta: null,
+  quickEditButton: null,
+  saveButton: null,
+  searchButton: null,
+  contentGrid: null,
   viewerHost: null,
+  editorPanel: null,
+  editorHint: null,
+  editorSurface: null,
+  editorMessage: null,
+  searchPanelHost: null,
   statusPill: null,
   previewPill: null,
 };
@@ -87,6 +109,7 @@ const domRefs: AppDomRefs = {
 let editorView: EditorView | null = null;
 let previewTimer: number | null = null;
 let previewRunId = 0;
+let suppressEditorChangeEffects = false;
 
 const editorTheme = EditorView.theme({
   "&": {
@@ -177,6 +200,10 @@ function destroyEditorView(): void {
   window.__MDVIEW_EDITOR_VIEW__ = null;
 }
 
+function editorHasFocus(): boolean {
+  return !!editorView?.hasFocus;
+}
+
 function renderStatusMeta(): string {
   if (!appState.launchPath) {
     return "Demo document";
@@ -248,6 +275,11 @@ function renderViewerHost(): void {
   renderDocument(domRefs.viewerHost, appState.renderedDocument, {
     quickEditEnabled: appState.quickEditEnabled,
     onJumpToLine: (lineNumber) => {
+      if (appState.quickEditEnabled && editorView) {
+        jumpEditorToLine(lineNumber);
+        return;
+      }
+
       appState.quickEditEnabled = true;
       appState.pendingJumpLine = lineNumber;
       renderApp();
@@ -307,6 +339,40 @@ function jumpEditorToLine(lineNumber: number): void {
     scrollIntoView: true,
   });
   editorView.focus();
+}
+
+function replaceEditorDocument(nextMarkdown: string): void {
+  if (!editorView) {
+    return;
+  }
+
+  const shouldRefocus = editorHasFocus();
+  const currentSelection = editorView.state.selection;
+  const nextLength = nextMarkdown.length;
+  const selection = EditorSelection.create(
+    currentSelection.ranges.map((range) =>
+      EditorSelection.range(
+        Math.min(range.anchor, nextLength),
+        Math.min(range.head, nextLength)
+      )
+    ),
+    Math.min(currentSelection.mainIndex, currentSelection.ranges.length - 1)
+  );
+
+  suppressEditorChangeEffects = true;
+  editorView.dispatch({
+    changes: {
+      from: 0,
+      to: editorView.state.doc.length,
+      insert: nextMarkdown,
+    },
+    selection,
+  });
+  suppressEditorChangeEffects = false;
+
+  if (shouldRefocus) {
+    editorView.focus();
+  }
 }
 
 function getSearchMatches(source: string, query: string): SearchMatch[] {
@@ -393,7 +459,7 @@ function openSearchPanel(focus: "find" | "replace" = "find"): void {
   }
 
   appState.searchPanelOpen = true;
-  renderApp();
+  syncSearchPanel();
   queueMicrotask(() => {
     focusSearchField(focus);
   });
@@ -405,7 +471,8 @@ function closeSearchPanel(): void {
   }
 
   appState.searchPanelOpen = false;
-  renderApp();
+  syncSearchPanel();
+  editorView?.focus();
 }
 
 function focusSearchMatch(direction: 1 | -1): void {
@@ -464,16 +531,28 @@ function replaceAllMatches(): void {
     return;
   }
 
-  const nextText = appState.sourceMarkdown
-    .split(appState.searchQuery)
-    .join(appState.replaceQuery);
+  const matches = getSearchMatches(appState.sourceMarkdown, appState.searchQuery);
+  if (matches.length === 0) {
+    return;
+  }
+
+  const selection = editorView.state.selection.main;
+  const activeMatchIndex = Math.max(0, appState.activeSearchMatch - 1);
+  const activeMatch = matches[activeMatchIndex] ?? matches[0];
+
   editorView.dispatch({
-    changes: {
-      from: 0,
-      to: editorView.state.doc.length,
-      insert: nextText,
-    },
-    selection: EditorSelection.cursor(0),
+    changes: matches.map((match) => ({
+      from: match.from,
+      to: match.to,
+      insert: appState.replaceQuery,
+    })),
+    selection:
+      selection.from === activeMatch.from && selection.to === activeMatch.to
+        ? EditorSelection.range(
+            activeMatch.from,
+            activeMatch.from + appState.replaceQuery.length
+          )
+        : editorView.state.selection,
   });
 }
 
@@ -490,6 +569,12 @@ function createEditorExtensions(): Extension[] {
       }
 
       appState.sourceMarkdown = update.state.doc.toString();
+      if (suppressEditorChangeEffects) {
+        refreshSearchState();
+        updateSearchSummary();
+        return;
+      }
+
       appState.dirty = true;
       appState.saveError = null;
       appState.externalReloadBlocked = false;
@@ -502,15 +587,20 @@ function createEditorExtensions(): Extension[] {
 }
 
 function mountEditor(parent: HTMLElement): void {
-  destroyEditorView();
+  if (editorView) {
+    if (editorView.dom.parentElement !== parent) {
+      parent.replaceChildren(editorView.dom);
+    }
+  } else {
+    editorView = new EditorView({
+      state: EditorState.create({
+        doc: appState.sourceMarkdown,
+        extensions: createEditorExtensions(),
+      }),
+      parent,
+    });
+  }
 
-  editorView = new EditorView({
-    state: EditorState.create({
-      doc: appState.sourceMarkdown,
-      extensions: createEditorExtensions(),
-    }),
-    parent,
-  });
   window.__MDVIEW_EDITOR_VIEW__ = editorView;
 
   if (appState.pendingJumpLine !== null) {
@@ -549,7 +639,8 @@ async function saveCurrentMarkdown(): Promise<void> {
       error instanceof Error ? error.message : "Failed to save markdown file.";
   } finally {
     appState.saving = false;
-    renderApp();
+    syncStatusPills();
+    syncEditorMessage();
   }
 }
 
@@ -654,13 +745,63 @@ function renderSearchPanel(): HTMLElement {
   return panel;
 }
 
+function syncSearchPanel(): void {
+  if (!(domRefs.searchPanelHost instanceof HTMLElement) || !appState.quickEditEnabled) {
+    return;
+  }
+
+  domRefs.searchPanelHost.replaceChildren();
+  if (appState.searchPanelOpen) {
+    domRefs.searchPanelHost.appendChild(renderSearchPanel());
+  }
+}
+
+function syncEditorMessage(): void {
+  if (!(domRefs.editorMessage instanceof HTMLElement)) {
+    return;
+  }
+
+  const message =
+    appState.saveError ??
+    (appState.externalReloadBlocked
+      ? "File changed on disk while you had unsaved edits. Save to overwrite with your current changes."
+      : null);
+
+  domRefs.editorMessage.textContent = message ?? "";
+  domRefs.editorMessage.hidden = !message;
+}
+
+function syncToolbar(): void {
+  if (domRefs.toolbarMeta) {
+    domRefs.toolbarMeta.textContent = appState.launchPath ?? "No file launched";
+  }
+
+  if (domRefs.quickEditButton) {
+    domRefs.quickEditButton.className = appState.quickEditEnabled
+      ? "mdv-button mdv-button--primary"
+      : "mdv-button mdv-button--secondary";
+    domRefs.quickEditButton.textContent = appState.quickEditEnabled
+      ? "Exit Quick Edit"
+      : "Quick Edit";
+  }
+
+  if (domRefs.saveButton) {
+    domRefs.saveButton.disabled = !appState.launchPath || !appState.quickEditEnabled;
+  }
+
+  if (domRefs.searchButton) {
+    domRefs.searchButton.disabled = !appState.quickEditEnabled;
+  }
+}
+
 function renderApp(): void {
   const app = document.getElementById("app");
   if (!(app instanceof HTMLElement) || !appState.renderedDocument) {
     return;
   }
 
-  destroyEditorView();
+  const hadEditorFocus = editorHasFocus();
+  domRefs.app = app;
   app.innerHTML = "";
   mountDefaultAppsHelper(app);
 
@@ -680,6 +821,7 @@ function renderApp(): void {
   const meta = document.createElement("p");
   meta.className = "mdv-toolbar__meta";
   meta.textContent = appState.launchPath ?? "No file launched";
+  domRefs.toolbarMeta = meta;
 
   titleGroup.appendChild(title);
   titleGroup.appendChild(meta);
@@ -699,6 +841,7 @@ function renderApp(): void {
   quickEditButton.addEventListener("click", () => {
     toggleQuickEdit();
   });
+  domRefs.quickEditButton = quickEditButton;
 
   const saveButton = document.createElement("button");
   saveButton.type = "button";
@@ -709,6 +852,7 @@ function renderApp(): void {
   saveButton.addEventListener("click", () => {
     void saveCurrentMarkdown();
   });
+  domRefs.saveButton = saveButton;
 
   const searchButton = document.createElement("button");
   searchButton.type = "button";
@@ -719,6 +863,7 @@ function renderApp(): void {
   searchButton.addEventListener("click", () => {
     openSearchPanel("find");
   });
+  domRefs.searchButton = searchButton;
 
   const status = document.createElement("span");
   status.className = "mdv-status-pill";
@@ -743,6 +888,7 @@ function renderApp(): void {
   contentGrid.className = appState.quickEditEnabled
     ? "mdv-layout mdv-layout--editing"
     : "mdv-layout";
+  domRefs.contentGrid = contentGrid;
 
   const viewerHost = document.createElement("div");
   viewerHost.className = "mdv-viewer-host";
@@ -769,32 +915,43 @@ function renderApp(): void {
 
     editorHeader.appendChild(editorTitle);
     editorHeader.appendChild(editorHint);
+    domRefs.editorHint = editorHint;
     editorPanel.appendChild(editorHeader);
 
-    if (appState.searchPanelOpen) {
-      editorPanel.appendChild(renderSearchPanel());
-    }
+    const searchPanelHost = document.createElement("div");
+    domRefs.searchPanelHost = searchPanelHost;
+    editorPanel.appendChild(searchPanelHost);
 
     const surface = document.createElement("div");
     surface.className = "mdv-editor__surface";
+    domRefs.editorSurface = surface;
     editorPanel.appendChild(surface);
 
-    if (appState.saveError || appState.externalReloadBlocked) {
-      const message = document.createElement("p");
-      message.className = "mdv-editor__message";
-      message.textContent =
-        appState.saveError ??
-        "File changed on disk while you had unsaved edits. Save to overwrite with your current changes.";
-      editorPanel.appendChild(message);
-    }
+    const message = document.createElement("p");
+    message.className = "mdv-editor__message";
+    domRefs.editorMessage = message;
+    editorPanel.appendChild(message);
 
+    domRefs.editorPanel = editorPanel;
     contentGrid.appendChild(editorPanel);
     mountEditor(surface);
+    syncSearchPanel();
+    syncEditorMessage();
+    if (hadEditorFocus) {
+      editorView?.focus();
+    }
+  } else {
+    domRefs.editorPanel = null;
+    domRefs.editorHint = null;
+    domRefs.editorSurface = null;
+    domRefs.editorMessage = null;
+    domRefs.searchPanelHost = null;
   }
 
   workspace.appendChild(toolbar);
   workspace.appendChild(contentGrid);
   app.appendChild(workspace);
+  syncToolbar();
   syncStatusPills();
 }
 
@@ -833,12 +990,22 @@ async function bootstrapThemeBridge(): Promise<void> {
     try {
       if (appState.dirty) {
         appState.externalReloadBlocked = true;
-        renderApp();
+        syncEditorMessage();
         return;
       }
 
-      await loadInitialMarkdown();
-      renderApp();
+      const nextMarkdown = await invoke<string | null>("read_launch_markdown");
+      if (typeof nextMarkdown === "string") {
+        appState.sourceMarkdown = nextMarkdown;
+      }
+      await rerenderSource();
+      refreshSearchState();
+      if (editorView && editorView.state.doc.toString() !== appState.sourceMarkdown) {
+        replaceEditorDocument(appState.sourceMarkdown);
+      }
+      renderViewerHost();
+      syncStatusPills();
+      syncEditorMessage();
     } catch (error) {
       console.error("[mdview] failed to reload markdown after file change", error);
     }

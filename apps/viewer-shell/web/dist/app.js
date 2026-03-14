@@ -30394,27 +30394,47 @@
     nav2.appendChild(list);
     return nav2;
   }
-  function renderDocument(container, doc2, options = {}) {
-    container.innerHTML = "";
+  function ensureViewerDom(container) {
+    const existingShell = container.querySelector(":scope > .mdv-shell");
+    const existingToc = existingShell?.querySelector(":scope > .mdv-toc");
+    const existingArticle = existingShell?.querySelector(":scope > .mdv-content");
+    if (existingShell && existingToc && existingArticle) {
+      return {
+        shell: existingShell,
+        toc: existingToc,
+        article: existingArticle
+      };
+    }
+    container.replaceChildren();
     const shell = document.createElement("section");
     shell.className = "mdv-shell";
-    const toc = buildToc(doc2.headings, options);
+    const toc = document.createElement("nav");
+    toc.className = "mdv-toc";
     const article = document.createElement("article");
     article.className = "mdv-content";
+    shell.appendChild(toc);
+    shell.appendChild(article);
+    container.appendChild(shell);
+    return { shell, toc, article };
+  }
+  function renderDocument(container, doc2, options = {}) {
+    const { toc, article } = ensureViewerDom(container);
+    toc.replaceWith(buildToc(doc2.headings, options));
     if (doc2.is_blank) {
       const empty2 = document.createElement("p");
       empty2.className = "mdv-empty";
       empty2.textContent = "This markdown file is empty.";
-      article.appendChild(empty2);
+      article.replaceChildren(empty2);
     } else {
       const template = document.createElement("template");
       template.innerHTML = doc2.html;
       annotateHeadingNodes(template.content, doc2.headings);
-      article.appendChild(template.content.cloneNode(true));
+      article.replaceChildren(template.content.cloneNode(true));
     }
+    article.classList.toggle("mdv-content--jumpable", !!options.quickEditEnabled);
+    article.onclick = null;
     if (options.quickEditEnabled) {
-      article.classList.add("mdv-content--jumpable");
-      article.addEventListener("click", (event) => {
+      article.onclick = (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
           return;
@@ -30428,11 +30448,8 @@
           event.preventDefault();
           options.onJumpToLine?.(lineStart);
         }
-      });
+      };
     }
-    shell.appendChild(toc);
-    shell.appendChild(article);
-    container.appendChild(shell);
   }
 
   // apps/viewer-shell/web/src/main.ts
@@ -30470,13 +30487,25 @@ Clicking headings can map to source lines with \`data-line-start\`.
     activeSearchMatch: 0
   };
   var domRefs = {
+    app: null,
+    toolbarMeta: null,
+    quickEditButton: null,
+    saveButton: null,
+    searchButton: null,
+    contentGrid: null,
     viewerHost: null,
+    editorPanel: null,
+    editorHint: null,
+    editorSurface: null,
+    editorMessage: null,
+    searchPanelHost: null,
     statusPill: null,
     previewPill: null
   };
   var editorView = null;
   var previewTimer = null;
   var previewRunId = 0;
+  var suppressEditorChangeEffects = false;
   var editorTheme = EditorView.theme({
     "&": {
       height: "100%",
@@ -30544,10 +30573,8 @@ Clicking headings can map to source lines with \`data-line-start\`.
     appState.previewPending = false;
     refreshSearchState();
   }
-  function destroyEditorView() {
-    editorView?.destroy();
-    editorView = null;
-    window.__MDVIEW_EDITOR_VIEW__ = null;
+  function editorHasFocus() {
+    return !!editorView?.hasFocus;
   }
   function renderStatusMeta() {
     if (!appState.launchPath) {
@@ -30606,6 +30633,10 @@ Clicking headings can map to source lines with \`data-line-start\`.
     renderDocument(domRefs.viewerHost, appState.renderedDocument, {
       quickEditEnabled: appState.quickEditEnabled,
       onJumpToLine: (lineNumber) => {
+        if (appState.quickEditEnabled && editorView) {
+          jumpEditorToLine(lineNumber);
+          return;
+        }
         appState.quickEditEnabled = true;
         appState.pendingJumpLine = lineNumber;
         renderApp();
@@ -30654,6 +30685,36 @@ Clicking headings can map to source lines with \`data-line-start\`.
       scrollIntoView: true
     });
     editorView.focus();
+  }
+  function replaceEditorDocument(nextMarkdown) {
+    if (!editorView) {
+      return;
+    }
+    const shouldRefocus = editorHasFocus();
+    const currentSelection = editorView.state.selection;
+    const nextLength = nextMarkdown.length;
+    const selection2 = EditorSelection.create(
+      currentSelection.ranges.map(
+        (range) => EditorSelection.range(
+          Math.min(range.anchor, nextLength),
+          Math.min(range.head, nextLength)
+        )
+      ),
+      Math.min(currentSelection.mainIndex, currentSelection.ranges.length - 1)
+    );
+    suppressEditorChangeEffects = true;
+    editorView.dispatch({
+      changes: {
+        from: 0,
+        to: editorView.state.doc.length,
+        insert: nextMarkdown
+      },
+      selection: selection2
+    });
+    suppressEditorChangeEffects = false;
+    if (shouldRefocus) {
+      editorView.focus();
+    }
   }
   function getSearchMatches(source, query) {
     if (!query) {
@@ -30724,7 +30785,7 @@ Clicking headings can map to source lines with \`data-line-start\`.
       return;
     }
     appState.searchPanelOpen = true;
-    renderApp();
+    syncSearchPanel();
     queueMicrotask(() => {
       focusSearchField(focus);
     });
@@ -30734,7 +30795,8 @@ Clicking headings can map to source lines with \`data-line-start\`.
       return;
     }
     appState.searchPanelOpen = false;
-    renderApp();
+    syncSearchPanel();
+    editorView?.focus();
   }
   function focusSearchMatch(direction) {
     if (!editorView || !appState.searchQuery) {
@@ -30781,14 +30843,23 @@ Clicking headings can map to source lines with \`data-line-start\`.
     if (!editorView || !appState.searchQuery) {
       return;
     }
-    const nextText = appState.sourceMarkdown.split(appState.searchQuery).join(appState.replaceQuery);
+    const matches = getSearchMatches(appState.sourceMarkdown, appState.searchQuery);
+    if (matches.length === 0) {
+      return;
+    }
+    const selection2 = editorView.state.selection.main;
+    const activeMatchIndex = Math.max(0, appState.activeSearchMatch - 1);
+    const activeMatch = matches[activeMatchIndex] ?? matches[0];
     editorView.dispatch({
-      changes: {
-        from: 0,
-        to: editorView.state.doc.length,
-        insert: nextText
-      },
-      selection: EditorSelection.cursor(0)
+      changes: matches.map((match) => ({
+        from: match.from,
+        to: match.to,
+        insert: appState.replaceQuery
+      })),
+      selection: selection2.from === activeMatch.from && selection2.to === activeMatch.to ? EditorSelection.range(
+        activeMatch.from,
+        activeMatch.from + appState.replaceQuery.length
+      ) : editorView.state.selection
     });
   }
   function createEditorExtensions() {
@@ -30803,6 +30874,11 @@ Clicking headings can map to source lines with \`data-line-start\`.
           return;
         }
         appState.sourceMarkdown = update.state.doc.toString();
+        if (suppressEditorChangeEffects) {
+          refreshSearchState();
+          updateSearchSummary();
+          return;
+        }
         appState.dirty = true;
         appState.saveError = null;
         appState.externalReloadBlocked = false;
@@ -30814,14 +30890,19 @@ Clicking headings can map to source lines with \`data-line-start\`.
     ];
   }
   function mountEditor(parent) {
-    destroyEditorView();
-    editorView = new EditorView({
-      state: EditorState.create({
-        doc: appState.sourceMarkdown,
-        extensions: createEditorExtensions()
-      }),
-      parent
-    });
+    if (editorView) {
+      if (editorView.dom.parentElement !== parent) {
+        parent.replaceChildren(editorView.dom);
+      }
+    } else {
+      editorView = new EditorView({
+        state: EditorState.create({
+          doc: appState.sourceMarkdown,
+          extensions: createEditorExtensions()
+        }),
+        parent
+      });
+    }
     window.__MDVIEW_EDITOR_VIEW__ = editorView;
     if (appState.pendingJumpLine !== null) {
       jumpEditorToLine(appState.pendingJumpLine);
@@ -30853,7 +30934,8 @@ Clicking headings can map to source lines with \`data-line-start\`.
       appState.saveError = error instanceof Error ? error.message : "Failed to save markdown file.";
     } finally {
       appState.saving = false;
-      renderApp();
+      syncStatusPills();
+      syncEditorMessage();
     }
   }
   function toggleQuickEdit(nextState) {
@@ -30941,12 +31023,45 @@ Clicking headings can map to source lines with \`data-line-start\`.
     });
     return panel;
   }
+  function syncSearchPanel() {
+    if (!(domRefs.searchPanelHost instanceof HTMLElement) || !appState.quickEditEnabled) {
+      return;
+    }
+    domRefs.searchPanelHost.replaceChildren();
+    if (appState.searchPanelOpen) {
+      domRefs.searchPanelHost.appendChild(renderSearchPanel());
+    }
+  }
+  function syncEditorMessage() {
+    if (!(domRefs.editorMessage instanceof HTMLElement)) {
+      return;
+    }
+    const message = appState.saveError ?? (appState.externalReloadBlocked ? "File changed on disk while you had unsaved edits. Save to overwrite with your current changes." : null);
+    domRefs.editorMessage.textContent = message ?? "";
+    domRefs.editorMessage.hidden = !message;
+  }
+  function syncToolbar() {
+    if (domRefs.toolbarMeta) {
+      domRefs.toolbarMeta.textContent = appState.launchPath ?? "No file launched";
+    }
+    if (domRefs.quickEditButton) {
+      domRefs.quickEditButton.className = appState.quickEditEnabled ? "mdv-button mdv-button--primary" : "mdv-button mdv-button--secondary";
+      domRefs.quickEditButton.textContent = appState.quickEditEnabled ? "Exit Quick Edit" : "Quick Edit";
+    }
+    if (domRefs.saveButton) {
+      domRefs.saveButton.disabled = !appState.launchPath || !appState.quickEditEnabled;
+    }
+    if (domRefs.searchButton) {
+      domRefs.searchButton.disabled = !appState.quickEditEnabled;
+    }
+  }
   function renderApp() {
     const app = document.getElementById("app");
     if (!(app instanceof HTMLElement) || !appState.renderedDocument) {
       return;
     }
-    destroyEditorView();
+    const hadEditorFocus = editorHasFocus();
+    domRefs.app = app;
     app.innerHTML = "";
     mountDefaultAppsHelper(app);
     const workspace = document.createElement("section");
@@ -30961,6 +31076,7 @@ Clicking headings can map to source lines with \`data-line-start\`.
     const meta2 = document.createElement("p");
     meta2.className = "mdv-toolbar__meta";
     meta2.textContent = appState.launchPath ?? "No file launched";
+    domRefs.toolbarMeta = meta2;
     titleGroup.appendChild(title);
     titleGroup.appendChild(meta2);
     const actions = document.createElement("div");
@@ -30973,6 +31089,7 @@ Clicking headings can map to source lines with \`data-line-start\`.
     quickEditButton.addEventListener("click", () => {
       toggleQuickEdit();
     });
+    domRefs.quickEditButton = quickEditButton;
     const saveButton = document.createElement("button");
     saveButton.type = "button";
     saveButton.className = "mdv-button mdv-button--secondary";
@@ -30982,6 +31099,7 @@ Clicking headings can map to source lines with \`data-line-start\`.
     saveButton.addEventListener("click", () => {
       void saveCurrentMarkdown();
     });
+    domRefs.saveButton = saveButton;
     const searchButton = document.createElement("button");
     searchButton.type = "button";
     searchButton.className = "mdv-button mdv-button--secondary";
@@ -30991,6 +31109,7 @@ Clicking headings can map to source lines with \`data-line-start\`.
     searchButton.addEventListener("click", () => {
       openSearchPanel2("find");
     });
+    domRefs.searchButton = searchButton;
     const status = document.createElement("span");
     status.className = "mdv-status-pill";
     status.textContent = renderStatusMeta();
@@ -31008,6 +31127,7 @@ Clicking headings can map to source lines with \`data-line-start\`.
     toolbar.appendChild(actions);
     const contentGrid = document.createElement("div");
     contentGrid.className = appState.quickEditEnabled ? "mdv-layout mdv-layout--editing" : "mdv-layout";
+    domRefs.contentGrid = contentGrid;
     const viewerHost = document.createElement("div");
     viewerHost.className = "mdv-viewer-host";
     domRefs.viewerHost = viewerHost;
@@ -31026,25 +31146,38 @@ Clicking headings can map to source lines with \`data-line-start\`.
       editorHint.textContent = appState.launchPath ? "CodeMirror editor with debounced live preview, jump-to-line, and quick find/replace." : "Editing demo content only. Launch a file to enable saving.";
       editorHeader.appendChild(editorTitle);
       editorHeader.appendChild(editorHint);
+      domRefs.editorHint = editorHint;
       editorPanel.appendChild(editorHeader);
-      if (appState.searchPanelOpen) {
-        editorPanel.appendChild(renderSearchPanel());
-      }
+      const searchPanelHost = document.createElement("div");
+      domRefs.searchPanelHost = searchPanelHost;
+      editorPanel.appendChild(searchPanelHost);
       const surface = document.createElement("div");
       surface.className = "mdv-editor__surface";
+      domRefs.editorSurface = surface;
       editorPanel.appendChild(surface);
-      if (appState.saveError || appState.externalReloadBlocked) {
-        const message = document.createElement("p");
-        message.className = "mdv-editor__message";
-        message.textContent = appState.saveError ?? "File changed on disk while you had unsaved edits. Save to overwrite with your current changes.";
-        editorPanel.appendChild(message);
-      }
+      const message = document.createElement("p");
+      message.className = "mdv-editor__message";
+      domRefs.editorMessage = message;
+      editorPanel.appendChild(message);
+      domRefs.editorPanel = editorPanel;
       contentGrid.appendChild(editorPanel);
       mountEditor(surface);
+      syncSearchPanel();
+      syncEditorMessage();
+      if (hadEditorFocus) {
+        editorView?.focus();
+      }
+    } else {
+      domRefs.editorPanel = null;
+      domRefs.editorHint = null;
+      domRefs.editorSurface = null;
+      domRefs.editorMessage = null;
+      domRefs.searchPanelHost = null;
     }
     workspace.appendChild(toolbar);
     workspace.appendChild(contentGrid);
     app.appendChild(workspace);
+    syncToolbar();
     syncStatusPills();
   }
   function isEditableShortcut(event) {
@@ -31073,11 +31206,21 @@ Clicking headings can map to source lines with \`data-line-start\`.
       try {
         if (appState.dirty) {
           appState.externalReloadBlocked = true;
-          renderApp();
+          syncEditorMessage();
           return;
         }
-        await loadInitialMarkdown();
-        renderApp();
+        const nextMarkdown = await invoke("read_launch_markdown");
+        if (typeof nextMarkdown === "string") {
+          appState.sourceMarkdown = nextMarkdown;
+        }
+        await rerenderSource();
+        refreshSearchState();
+        if (editorView && editorView.state.doc.toString() !== appState.sourceMarkdown) {
+          replaceEditorDocument(appState.sourceMarkdown);
+        }
+        renderViewerHost();
+        syncStatusPills();
+        syncEditorMessage();
       } catch (error) {
         console.error("[mdview] failed to reload markdown after file change", error);
       }
