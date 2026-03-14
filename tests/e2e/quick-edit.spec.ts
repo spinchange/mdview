@@ -44,6 +44,16 @@ async function setMockMarkdown(page: Page, markdown: string) {
   }, markdown);
 }
 
+async function setReadLaunchMarkdownDelays(page: Page, delays: number[]) {
+  await page.evaluate((nextDelays) => {
+    (
+      window as Window & {
+        __MDVIEW_TEST_API__?: { setReadLaunchMarkdownDelays: (value: number[]) => void };
+      }
+    ).__MDVIEW_TEST_API__?.setReadLaunchMarkdownDelays(nextDelays);
+  }, delays);
+}
+
 async function emitFileChanged(page: Page) {
   await page.evaluate((eventName) => {
     (
@@ -296,6 +306,73 @@ test.describe("Quick Edit", () => {
 
     const afterScroll = await page.evaluate(() => window.scrollY);
     expect(Math.abs(afterScroll - beforeScroll)).toBeLessThan(80);
+  });
+
+  test("ignores stale overlapping external reloads", async ({ page }) => {
+    await page.keyboard.press("Control+E");
+    await setReadLaunchMarkdownDelays(page, [120, 10]);
+
+    await setMockMarkdown(
+      page,
+      "# mdview\n\n## First section\nOlder disk version\n\n## Second section\nOld body\n"
+    );
+    await emitFileChanged(page);
+
+    await setMockMarkdown(
+      page,
+      "# mdview\n\n## First section\nNewest disk version\n\n## Second section\nNew body\n"
+    );
+    await emitFileChanged(page);
+
+    await expect(page.locator(".mdv-content")).toContainText("Newest disk version");
+    await expect(page.locator(".mdv-content")).toContainText("New body");
+    await expect(page.locator(".mdv-content")).not.toContainText("Older disk version");
+  });
+
+  test("does not apply external reload results after the editor becomes dirty", async ({ page }) => {
+    await page.keyboard.press("Control+E");
+    await setReadLaunchMarkdownDelays(page, [120]);
+    await setMockMarkdown(
+      page,
+      "# mdview\n\n## First section\nDisk version\n\n## Second section\nFrom disk\n"
+    );
+
+    await emitFileChanged(page);
+    await page.waitForTimeout(20);
+    await dispatchEditorUpdate(page, {
+      changes: { from: 0, insert: "Local edit\n\n" },
+    });
+
+    await page.waitForTimeout(160);
+
+    const editorText = await page.evaluate(() => {
+      return (window as Window & { __MDVIEW_EDITOR_VIEW__?: any }).__MDVIEW_EDITOR_VIEW__?.state.doc.toString();
+    });
+    expect(editorText.startsWith("Local edit")).toBe(true);
+    await expect(page.locator(".mdv-content")).not.toContainText("From disk");
+  });
+
+  test("external reloads do not pollute undo history", async ({ page }) => {
+    await page.keyboard.press("Control+E");
+    await dispatchEditorUpdate(page, {
+      changes: { from: 0, insert: "Local edit\n\n" },
+    });
+    await page.keyboard.press("Control+S");
+
+    await setMockMarkdown(
+      page,
+      "# mdview\n\n## First section\nBody copy reloaded\n\n## Second section\nMore body\n"
+    );
+    await emitFileChanged(page);
+    await expect(page.locator(".mdv-content")).toContainText("Body copy reloaded");
+
+    await page.keyboard.press("Control+Z");
+
+    const editorText = await page.evaluate(() => {
+      return (window as Window & { __MDVIEW_EDITOR_VIEW__?: any }).__MDVIEW_EDITOR_VIEW__?.state.doc.toString();
+    });
+    expect(editorText).toContain("Body copy reloaded");
+    expect(editorText.startsWith("Local edit")).toBe(false);
   });
 
   test("saves edited markdown with Ctrl+S", async ({ page }) => {

@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::State;
@@ -103,7 +104,7 @@ fn write_markdown_file_impl(path: &Path, content: &str) -> Result<(), String> {
 
 fn write_markdown_file_with<F>(path: &Path, content: &str, replace: F) -> Result<(), String>
 where
-    F: Fn(&Path, &Path) -> std::io::Result<()>,
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
 {
     let temp_path = create_temp_path(path);
     let write_result = (|| -> std::io::Result<()> {
@@ -115,14 +116,58 @@ where
         file.flush()?;
         file.sync_all()?;
         drop(file);
-        replace(&temp_path, path)
+        replace_with_retry(&temp_path, path, replace)
     })();
 
     if write_result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
 
-    write_result.map_err(|e| format!("failed to write markdown file: {e}"))
+    write_result.map_err(|e| {
+        format!(
+            "failed to write markdown file: {}",
+            describe_write_error(path, &e)
+        )
+    })
+}
+
+fn replace_with_retry<F>(
+    temp_path: &Path,
+    destination_path: &Path,
+    mut replace: F,
+) -> std::io::Result<()>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    const REPLACE_RETRY_DELAYS_MS: [u64; 3] = [15, 40, 90];
+    let mut last_error = None;
+
+    for delay_ms in [0].into_iter().chain(REPLACE_RETRY_DELAYS_MS) {
+        if delay_ms > 0 {
+            thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
+
+        match replace(temp_path, destination_path) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+                last_error = Some(err);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| std::io::Error::from(ErrorKind::PermissionDenied)))
+}
+
+fn describe_write_error(path: &Path, error: &std::io::Error) -> String {
+    if error.kind() == ErrorKind::PermissionDenied {
+        return format!(
+            "{error}. The destination file may be locked by another app: {}",
+            path.display()
+        );
+    }
+
+    error.to_string()
 }
 
 fn create_temp_path(path: &Path) -> PathBuf {
@@ -220,6 +265,7 @@ fn open_shared_read(path: &Path) -> std::io::Result<std::fs::File> {
 mod tests {
     use std::ffi::OsString;
     use std::fs;
+    use std::io::ErrorKind;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -267,6 +313,42 @@ mod tests {
         assert_eq!(content, "before");
         let temp_files = sibling_temp_files(&path);
         assert!(temp_files.is_empty(), "temporary files should be cleaned up");
+        fs::remove_file(&path).expect("cleanup markdown");
+    }
+
+    #[test]
+    fn atomic_write_retries_permission_denied_replace() {
+        let path = unique_test_path("atomic-write-retry");
+        fs::write(&path, "before").expect("seed markdown");
+        let mut attempts = 0;
+
+        write_markdown_file_with(&path, "after", |temp, dest| {
+            attempts += 1;
+            if attempts < 3 {
+                return Err(std::io::Error::from(ErrorKind::PermissionDenied));
+            }
+
+            fs::rename(temp, dest)
+        })
+        .expect("retry eventually succeeds");
+
+        let content = fs::read_to_string(&path).expect("read markdown");
+        assert_eq!(content, "after");
+        assert_eq!(attempts, 3);
+        fs::remove_file(&path).expect("cleanup markdown");
+    }
+
+    #[test]
+    fn atomic_write_reports_locked_destination_clearly() {
+        let path = unique_test_path("atomic-write-locked");
+        fs::write(&path, "before").expect("seed markdown");
+
+        let error = write_markdown_file_with(&path, "after", |_temp, _dest| {
+            Err(std::io::Error::from(ErrorKind::PermissionDenied))
+        })
+        .expect_err("locked replace should fail");
+
+        assert!(error.contains("locked by another app"));
         fs::remove_file(&path).expect("cleanup markdown");
     }
 

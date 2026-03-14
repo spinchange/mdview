@@ -1,4 +1,9 @@
-import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
+import {
+  EditorSelection,
+  EditorState,
+  Transaction,
+  type Extension,
+} from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -109,6 +114,7 @@ const domRefs: AppDomRefs = {
 let editorView: EditorView | null = null;
 let previewTimer: number | null = null;
 let previewRunId = 0;
+let externalReloadRunId = 0;
 let suppressEditorChangeEffects = false;
 
 const editorTheme = EditorView.theme({
@@ -367,6 +373,7 @@ function replaceEditorDocument(nextMarkdown: string): void {
       insert: nextMarkdown,
     },
     selection,
+    annotations: Transaction.addToHistory.of(false),
   });
   suppressEditorChangeEffects = false;
 
@@ -987,6 +994,8 @@ async function bootstrapThemeBridge(): Promise<void> {
   }
 
   const unlistenFileChanged = await listen(FILE_CHANGED_EVENT, async () => {
+    const runId = ++externalReloadRunId;
+
     try {
       if (appState.dirty) {
         appState.externalReloadBlocked = true;
@@ -994,11 +1003,23 @@ async function bootstrapThemeBridge(): Promise<void> {
         return;
       }
 
-      const nextMarkdown = await invoke<string | null>("read_launch_markdown");
-      if (typeof nextMarkdown === "string") {
-        appState.sourceMarkdown = nextMarkdown;
+      const nextMarkdownResult = await invoke<string | null>("read_launch_markdown");
+      if (runId !== externalReloadRunId || appState.dirty) {
+        return;
       }
-      await rerenderSource();
+
+      const nextMarkdown =
+        typeof nextMarkdownResult === "string" ? nextMarkdownResult : DEMO_MARKDOWN;
+      const nextRenderedDocument = await invoke<RenderedDocument>("render_markdown", {
+        markdown: nextMarkdown,
+      });
+      if (runId !== externalReloadRunId || appState.dirty) {
+        return;
+      }
+
+      appState.sourceMarkdown = nextMarkdown;
+      appState.renderedDocument = nextRenderedDocument;
+      appState.previewPending = false;
       refreshSearchState();
       if (editorView && editorView.state.doc.toString() !== appState.sourceMarkdown) {
         replaceEditorDocument(appState.sourceMarkdown);

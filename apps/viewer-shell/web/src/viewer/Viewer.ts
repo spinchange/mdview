@@ -24,6 +24,12 @@ type ViewerDom = {
   article: HTMLElement;
 };
 
+type ScrollSnapshot = {
+  scrollY: number;
+  anchorIndex: number;
+  anchorTop: number;
+};
+
 function slugify(value: string): string {
   return value
     .toLowerCase()
@@ -116,6 +122,62 @@ function buildToc(
   return nav;
 }
 
+function syncToc(
+  toc: HTMLElement,
+  headings: HeadingSpan[],
+  options: RenderDocumentOptions
+): void {
+  const nextToc = buildToc(headings, options);
+  toc.replaceChildren(...Array.from(nextToc.childNodes));
+  Array.from(nextToc.attributes).forEach((attribute) => {
+    toc.setAttribute(attribute.name, attribute.value);
+  });
+}
+
+function captureScrollSnapshot(article: HTMLElement): ScrollSnapshot | null {
+  const children = Array.from(article.children).filter(
+    (child): child is HTMLElement => child instanceof HTMLElement
+  );
+  if (children.length === 0) {
+    return null;
+  }
+
+  const anchorIndex = children.findIndex((child) => child.getBoundingClientRect().bottom >= 0);
+  const safeIndex = anchorIndex >= 0 ? anchorIndex : children.length - 1;
+  const anchor = children[safeIndex];
+
+  return {
+    scrollY: window.scrollY,
+    anchorIndex: safeIndex,
+    anchorTop: anchor.getBoundingClientRect().top,
+  };
+}
+
+function restoreScrollSnapshot(article: HTMLElement, snapshot: ScrollSnapshot | null): void {
+  if (!snapshot) {
+    return;
+  }
+
+  const children = Array.from(article.children).filter(
+    (child): child is HTMLElement => child instanceof HTMLElement
+  );
+  if (children.length === 0) {
+    window.scrollTo({ top: snapshot.scrollY, behavior: "instant" });
+    return;
+  }
+
+  const anchor = children[Math.min(snapshot.anchorIndex, children.length - 1)];
+  const delta = anchor.getBoundingClientRect().top - snapshot.anchorTop;
+  if (Math.abs(delta) < 1) {
+    return;
+  }
+
+  window.scrollTo({
+    top: snapshot.scrollY + delta,
+    behavior: "instant",
+  });
+}
+
 function ensureViewerDom(container: HTMLElement): ViewerDom {
   const existingShell = container.querySelector<HTMLElement>(":scope > .mdv-shell");
   const existingToc = existingShell?.querySelector<HTMLElement>(":scope > .mdv-toc");
@@ -153,8 +215,9 @@ export function renderDocument(
   options: RenderDocumentOptions = {}
 ): void {
   const { toc, article } = ensureViewerDom(container);
+  const scrollSnapshot = captureScrollSnapshot(article);
 
-  toc.replaceWith(buildToc(doc.headings, options));
+  syncToc(toc, doc.headings, options);
   if (doc.is_blank) {
     const empty = document.createElement("p");
     empty.className = "mdv-empty";
@@ -188,4 +251,6 @@ export function renderDocument(
       }
     };
   }
+
+  restoreScrollSnapshot(article, scrollSnapshot);
 }

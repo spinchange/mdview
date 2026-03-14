@@ -27,6 +27,7 @@ export async function installTauriMock(page: Page): Promise<void> {
       defaultAppsOpened: false,
       windowReadyCalls: 0,
       renderCallCount: 0,
+      readLaunchMarkdownDelays: [] as number[],
       listeners: new Map<string, Set<(payload: unknown) => void>>(),
       callbacks: new Map<number, (payload: unknown) => void>(),
       nextCallbackId: 1,
@@ -85,7 +86,13 @@ export async function installTauriMock(page: Page): Promise<void> {
         case "get_launch_path":
           return Promise.resolve(state.launchPath);
         case "read_launch_markdown":
-          return Promise.resolve(state.markdown);
+          return new Promise((resolve) => {
+            const markdownAtRead = state.markdown;
+            const delay = state.readLaunchMarkdownDelays.shift() ?? 0;
+            window.setTimeout(() => {
+              resolve(markdownAtRead);
+            }, delay);
+          });
         case "render_markdown":
           state.renderCallCount += 1;
           return Promise.resolve(renderMarkdown(String(args?.markdown ?? "")));
@@ -151,6 +158,9 @@ export async function installTauriMock(page: Page): Promise<void> {
       value: {
         setMarkdown(nextMarkdown: string) {
           state.markdown = nextMarkdown;
+        },
+        setReadLaunchMarkdownDelays(delays: number[]) {
+          state.readLaunchMarkdownDelays = [...delays];
         },
         emit,
       },

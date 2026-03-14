@@ -30394,6 +30394,50 @@
     nav2.appendChild(list);
     return nav2;
   }
+  function syncToc(toc, headings, options) {
+    const nextToc = buildToc(headings, options);
+    toc.replaceChildren(...Array.from(nextToc.childNodes));
+    Array.from(nextToc.attributes).forEach((attribute) => {
+      toc.setAttribute(attribute.name, attribute.value);
+    });
+  }
+  function captureScrollSnapshot(article) {
+    const children = Array.from(article.children).filter(
+      (child) => child instanceof HTMLElement
+    );
+    if (children.length === 0) {
+      return null;
+    }
+    const anchorIndex = children.findIndex((child) => child.getBoundingClientRect().bottom >= 0);
+    const safeIndex = anchorIndex >= 0 ? anchorIndex : children.length - 1;
+    const anchor = children[safeIndex];
+    return {
+      scrollY: window.scrollY,
+      anchorIndex: safeIndex,
+      anchorTop: anchor.getBoundingClientRect().top
+    };
+  }
+  function restoreScrollSnapshot(article, snapshot) {
+    if (!snapshot) {
+      return;
+    }
+    const children = Array.from(article.children).filter(
+      (child) => child instanceof HTMLElement
+    );
+    if (children.length === 0) {
+      window.scrollTo({ top: snapshot.scrollY, behavior: "instant" });
+      return;
+    }
+    const anchor = children[Math.min(snapshot.anchorIndex, children.length - 1)];
+    const delta = anchor.getBoundingClientRect().top - snapshot.anchorTop;
+    if (Math.abs(delta) < 1) {
+      return;
+    }
+    window.scrollTo({
+      top: snapshot.scrollY + delta,
+      behavior: "instant"
+    });
+  }
   function ensureViewerDom(container) {
     const existingShell = container.querySelector(":scope > .mdv-shell");
     const existingToc = existingShell?.querySelector(":scope > .mdv-toc");
@@ -30419,7 +30463,8 @@
   }
   function renderDocument(container, doc2, options = {}) {
     const { toc, article } = ensureViewerDom(container);
-    toc.replaceWith(buildToc(doc2.headings, options));
+    const scrollSnapshot = captureScrollSnapshot(article);
+    syncToc(toc, doc2.headings, options);
     if (doc2.is_blank) {
       const empty2 = document.createElement("p");
       empty2.className = "mdv-empty";
@@ -30450,6 +30495,7 @@
         }
       };
     }
+    restoreScrollSnapshot(article, scrollSnapshot);
   }
 
   // apps/viewer-shell/web/src/main.ts
@@ -30505,6 +30551,7 @@ Clicking headings can map to source lines with \`data-line-start\`.
   var editorView = null;
   var previewTimer = null;
   var previewRunId = 0;
+  var externalReloadRunId = 0;
   var suppressEditorChangeEffects = false;
   var editorTheme = EditorView.theme({
     "&": {
@@ -30709,7 +30756,8 @@ Clicking headings can map to source lines with \`data-line-start\`.
         to: editorView.state.doc.length,
         insert: nextMarkdown
       },
-      selection: selection2
+      selection: selection2,
+      annotations: Transaction.addToHistory.of(false)
     });
     suppressEditorChangeEffects = false;
     if (shouldRefocus) {
@@ -31203,17 +31251,27 @@ Clicking headings can map to source lines with \`data-line-start\`.
       throw new Error("missing #app container");
     }
     const unlistenFileChanged = await listen(FILE_CHANGED_EVENT, async () => {
+      const runId = ++externalReloadRunId;
       try {
         if (appState.dirty) {
           appState.externalReloadBlocked = true;
           syncEditorMessage();
           return;
         }
-        const nextMarkdown = await invoke("read_launch_markdown");
-        if (typeof nextMarkdown === "string") {
-          appState.sourceMarkdown = nextMarkdown;
+        const nextMarkdownResult = await invoke("read_launch_markdown");
+        if (runId !== externalReloadRunId || appState.dirty) {
+          return;
         }
-        await rerenderSource();
+        const nextMarkdown = typeof nextMarkdownResult === "string" ? nextMarkdownResult : DEMO_MARKDOWN;
+        const nextRenderedDocument = await invoke("render_markdown", {
+          markdown: nextMarkdown
+        });
+        if (runId !== externalReloadRunId || appState.dirty) {
+          return;
+        }
+        appState.sourceMarkdown = nextMarkdown;
+        appState.renderedDocument = nextRenderedDocument;
+        appState.previewPending = false;
         refreshSearchState();
         if (editorView && editorView.state.doc.toString() !== appState.sourceMarkdown) {
           replaceEditorDocument(appState.sourceMarkdown);
