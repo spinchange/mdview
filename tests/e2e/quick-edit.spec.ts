@@ -64,8 +64,8 @@ test.describe("Quick Edit", () => {
     });
     expect(earlyRenderCount).toBe(1);
 
-    await expect(page.locator(".mdv-status-pill").nth(1)).toHaveText("Preview pending");
     await expect(page.locator(".mdv-content")).toContainText("More body updated");
+    await expect(page.locator(".mdv-status-pill").nth(1)).toHaveText("Preview live");
 
     const renderCount = await page.evaluate(() => {
       return (window as Window & { __MDVIEW_TEST_STATE__?: { renderCallCount?: number } })
