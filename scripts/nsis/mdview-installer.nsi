@@ -60,11 +60,17 @@ Section "Install"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-  nsExec::ExecToLog '"$INSTDIR\${APP_EXE}" --register'
+  ExecWait '"$INSTDIR\${APP_EXE}" "--register"' $0
+  ${If} $0 <> 0
+    DetailPrint "Registration command exited with code $0"
+  ${EndIf}
 SectionEnd
 
 Section "Uninstall"
-  nsExec::ExecToLog '"$INSTDIR\${APP_EXE}" --unregister'
+  ExecWait '"$INSTDIR\${APP_EXE}" "--unregister"' $0
+  ${If} $0 <> 0
+    DetailPrint "Unregister command exited with code $0"
+  ${EndIf}
 
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\${PREVIEW_DLL}"

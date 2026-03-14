@@ -30652,27 +30652,6 @@ Clicking headings can map to source lines with \`data-line-start\`.
       domRefs.previewPill.textContent = renderPreviewMeta();
     }
   }
-  function mountDefaultAppsHelper(container) {
-    const panel = document.createElement("section");
-    panel.className = "mdv-defaults-panel";
-    const copy = document.createElement("p");
-    copy.className = "mdv-defaults-panel__copy";
-    copy.textContent = "Set mdview as the default app for .md and .markdown.";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "mdv-button mdv-button--secondary";
-    button.textContent = "Set as default";
-    button.addEventListener("click", async () => {
-      try {
-        await invoke("open_default_apps_settings");
-      } catch (error) {
-        console.error("[mdview] failed to open default apps settings", error);
-      }
-    });
-    panel.appendChild(copy);
-    panel.appendChild(button);
-    container.appendChild(panel);
-  }
   function renderViewerHost() {
     if (!(domRefs.viewerHost instanceof HTMLElement) || !appState.renderedDocument) {
       return;
@@ -31111,7 +31090,6 @@ Clicking headings can map to source lines with \`data-line-start\`.
     const hadEditorFocus = editorHasFocus();
     domRefs.app = app;
     app.innerHTML = "";
-    mountDefaultAppsHelper(app);
     const workspace = document.createElement("section");
     workspace.className = "mdv-workspace";
     const toolbar = document.createElement("header");

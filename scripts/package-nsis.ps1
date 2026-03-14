@@ -58,10 +58,30 @@ function Invoke-Step {
   )
 
   Write-Host "[mdview] > $FilePath $($Arguments -join ' ')"
-  & $FilePath @Arguments
+  Push-Location $WorkingDirectory
+  try {
+    & $FilePath @Arguments
+  } finally {
+    Pop-Location
+  }
   if ($LASTEXITCODE -ne 0) {
     throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
   }
+}
+
+function Resolve-CargoTauri {
+  $command = Get-Command cargo-tauri -ErrorAction SilentlyContinue
+  if ($command) {
+    return $command.Source
+  }
+
+  $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE ".cargo" }
+  $candidate = Join-Path $cargoHome "bin\cargo-tauri.exe"
+  if (Test-Path $candidate) {
+    return $candidate
+  }
+
+  return $null
 }
 
 function Assert-FileExists {
@@ -79,9 +99,21 @@ $installerName = "mdview-$resolvedVersion-setup.exe"
 $installerPath = Join-Path $outputRoot $installerName
 
 if (!$SkipBuild) {
-  Invoke-Step -FilePath "npm" -Arguments @("run", "build:web")
-  Invoke-Step -FilePath "cargo" -Arguments @("build", "--package", "viewer-shell", "--$Configuration")
-  Invoke-Step -FilePath "cargo" -Arguments @("build", "--package", "win-preview-handler", "--$Configuration")
+  $cargoTauri = Resolve-CargoTauri
+  if (!$cargoTauri) {
+    throw "cargo-tauri was not found. Install it before packaging the Windows app so Tauri can embed the release frontend assets."
+  }
+
+  $tauriArgs = @("build", "--no-bundle")
+  if ($Configuration -eq "debug") {
+    $tauriArgs += "--debug"
+  } elseif ($Configuration -ne "release") {
+    throw "Unsupported configuration '$Configuration'. Use 'release' or 'debug'."
+  }
+
+  Invoke-Step -FilePath "npm" -Arguments @("run", "build:web") -WorkingDirectory $repoRoot
+  Invoke-Step -FilePath $cargoTauri -Arguments $tauriArgs -WorkingDirectory (Join-Path $repoRoot "apps\viewer-shell\src-tauri")
+  Invoke-Step -FilePath "cargo" -Arguments @("build", "--package", "win-preview-handler", "--$Configuration") -WorkingDirectory $repoRoot
 }
 
 Assert-FileExists -Path $exePath -Label "viewer-shell executable"
