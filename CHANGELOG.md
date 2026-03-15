@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.0-beta.2] - 2026-03-14
+
+### Added
+- Explorer Preview Pane WebView2 rendering with markdown HTML from `md-engine`.
+- Viewer external-link handling through the Tauri shell path.
+- Playwright regression coverage for viewer link behavior, including:
+  - external `https://` links,
+  - `mailto:` links,
+  - internal heading/TOC links,
+  - link behavior in Quick Edit mode.
+- Preview regression and release-validation docs:
+  - `docs/PREVIEW_REGRESSION_CHECKLIST.md`
+  - `docs/POST_WEBVIEW2_VALIDATION.md`
+  - `docs/INSTALLER_RUNTIME_RUNBOOK.md`
+- Preview log validation helper:
+  - `tests/e2e/preview-handler.spec.ps1`
+
+### Changed
+- Explorer Preview Pane upgraded from plain-text fallback to rendered WebView2 markdown preview.
+- Preview fallback/polish improved with readable typography, spacing, and explicit large-file handling before the WebView2 cutover.
+- Session/release handoff docs consolidated around the current Windows integration state.
+
+### Fixed
+- Explorer preview deadlock caused by cross-process `WM_SYNCPAINT` interaction.
+- Blank preview when switching files with Preview Pane already open and `SetRect` not called again.
+- Viewer external links now open correctly without breaking internal `#heading` navigation or Quick Edit heading jumps.
+
 ## [0.1.0-beta.1] - 2026-03-07
 
 ### Added
@@ -18,7 +45,7 @@ All notable changes to this project are documented in this file.
 - Release notes doc: `docs/RELEASE_NOTES_v0.1.0-beta.1.md`.
 
 ### Changed
-- Explorer preview handler upgraded from scaffold to WebView2-based rendering host.
+- Explorer preview handler scaffold upgraded into a stable plain-text fallback host.
 - Preview rendering now supports relative markdown assets via virtual host mapping.
 - Preview fallback behavior improved: themed error HTML instead of hard handler failure.
 - Theme watcher now reads registry in-process (no `reg.exe` subprocess polling), reducing flicker/popups.

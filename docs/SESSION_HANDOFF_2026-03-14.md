@@ -35,7 +35,7 @@
   - documented the NSIS/per-user installer workflow,
   - made `scripts/package-msix.ps1` explicitly unsupported for now.
 - Built a real installer artifact:
-  - `dist\nsis\mdview-0.1.0-beta.1-setup.exe`
+  - `dist\nsis\mdview-0.1.0-beta.2-setup.exe`
 - Performed local silent installer smoke tests:
   - install copied `viewer-shell.exe` + `win_preview_handler.dll` into `%LOCALAPPDATA%\Programs\mdview`,
   - uninstall removed the installed app directory.
@@ -48,7 +48,7 @@
 - `npm run package:nsis:stage -- --SkipBuild`
 - `npm run package:nsis`
 - Silent install smoke:
-  - `Start-Process dist\nsis\mdview-0.1.0-beta.1-setup.exe -ArgumentList "/S" -Wait`
+  - `Start-Process dist\nsis\mdview-0.1.0-beta.2-setup.exe -ArgumentList "/S" -Wait`
 - Silent uninstall smoke:
   - `Start-Process $env:LOCALAPPDATA\Programs\mdview\Uninstall.exe -ArgumentList "/S" -Wait`
 

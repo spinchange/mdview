@@ -9,7 +9,7 @@ Windows-first Markdown viewer with native shell integration.
 - Explorer Preview Pane rendering via COM preview handler,
 - Open With / context menu / default-app registration helpers.
 
-This project is currently in `v0.1.0-beta.1`.
+This project is currently in `v0.1.0-beta.2`.
 
 ## Current Capabilities
 - Markdown rendering pipeline (`md-engine`, comrak-based, source position aware).

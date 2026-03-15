@@ -32,7 +32,7 @@ Installed files:
 Run:
 
 ```powershell
-Start-Process "C:\Users\user\mdview\dist\nsis\mdview-0.1.0-beta.1-setup.exe" -ArgumentList "/S" -Wait
+Start-Process "C:\Users\user\mdview\dist\nsis\mdview-0.1.0-beta.2-setup.exe" -ArgumentList "/S" -Wait
 ```
 
 Confirm:
