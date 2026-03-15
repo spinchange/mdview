@@ -5,18 +5,22 @@ mod preview_handler {
     use std::env;
     use std::ffi::c_void;
     use std::fs::{self, OpenOptions};
-    use std::io::Write;
+    use std::io::Write as IoWrite;
+    use std::iter::once;
     use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::{mpsc, Arc, Mutex, OnceLock};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
 
-    use windows::core::{implement, GUID, IUnknown, PCWSTR, Result, HRESULT};
+    use windows::core::{implement, GUID, HRESULT, IUnknown, PCWSTR, Result};
     use windows::Win32::Foundation::{
         CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_INVALIDARG,
-        E_POINTER, HWND, LPARAM, RECT, S_FALSE, S_OK, WPARAM,
+        E_POINTER, HWND, RECT, S_FALSE, S_OK,
     };
-    
-    use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
+    use windows_core::BOOL;
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, IClassFactory, IClassFactory_Impl,
+        COINIT_APARTMENTTHREADED,
+    };
     use windows::Win32::System::Ole::{
         IObjectWithSite, IObjectWithSite_Impl, IOleWindow, IOleWindow_Impl,
     };
@@ -28,21 +32,62 @@ mod preview_handler {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, DispatchMessageW, MoveWindow, MSG,
-        PeekMessageW, SendMessageW, SetWindowTextW, ShowWindow, SW_SHOW,
-        TranslateMessage, WM_QUIT, WM_SETFONT, WS_CHILD, WS_EX_NOPARENTNOTIFY,
-        WS_VSCROLL, ES_MULTILINE, ES_READONLY, PM_REMOVE,
+        PeekMessageW, TranslateMessage,
+        WM_QUIT, WS_CHILD, WS_EX_NOPARENTNOTIFY, WS_VISIBLE, PM_REMOVE,
     };
-    use windows::Win32::UI::Controls::{EM_SETLIMITTEXT, EM_SETMARGINS};
-    use windows_core::{BOOL, Interface, Ref};
+    use windows_core::{Interface, Ref};
+
+    use webview2_com::{
+        CreateCoreWebView2ControllerCompletedHandler,
+        CreateCoreWebView2EnvironmentCompletedHandler,
+        Microsoft::Web::WebView2::Win32::{
+            CreateCoreWebView2EnvironmentWithOptions,
+            ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
+        },
+    };
+
+    use base_styles::tokens_from_snapshot;
+    use md_engine::MarkdownEngine;
+    use win_theme_watcher::current_snapshot;
 
     static ACTIVE_OBJECTS: AtomicI32 = AtomicI32::new(0);
 
+    // -----------------------------------------------------------------------
+    // RAII COM STA init guard for the preview background thread.
+    //
+    // CoInitializeEx returns S_OK (first init on thread) or S_FALSE (already
+    // STA) — both require a matching CoUninitialize on drop.
+    // RPC_E_CHANGED_MODE means the thread is already MTA; in that case we
+    // must NOT call CoUninitialize.
+    // -----------------------------------------------------------------------
+    struct ComInit {
+        should_uninit: bool,
+    }
+
+    impl ComInit {
+        fn apartment_threaded() -> Self {
+            let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            let should_uninit = hr.ok().is_ok(); // true for S_OK and S_FALSE
+            if !should_uninit {
+                log(&format!("thread: CoInitializeEx failed: {hr:?}"));
+            }
+            ComInit { should_uninit }
+        }
+    }
+
+    impl Drop for ComInit {
+        fn drop(&mut self) {
+            if self.should_uninit {
+                unsafe { CoUninitialize(); }
+            }
+        }
+    }
+
     pub const PREVIEW_HANDLER_CLSID: GUID =
         GUID::from_u128(0x4f831ca2_0db6_4f14_a4f2_8ab7de6f6601);
+
     // -----------------------------------------------------------------------
-    // HWND wrapper that is safe to send across threads.
-    // We enforce correct thread usage by design: the preview thread owns the
-    // child window; the COM thread only sends commands via the channel.
+    // HWND wrapper safe to send across threads.
     // -----------------------------------------------------------------------
     struct SendHwnd(pub isize);
     unsafe impl Send for SendHwnd {}
@@ -58,14 +103,15 @@ mod preview_handler {
     }
 
     // -----------------------------------------------------------------------
-    // Commands sent from the COM (STA) thread to the preview window thread.
+    // Commands sent from the COM STA thread to the preview window thread.
     // -----------------------------------------------------------------------
     enum PreviewCmd {
         /// Create (or recreate) the preview window.
         Show {
             parent: SendHwnd,
             bounds: RECT,
-            content: String,
+            /// Fully rendered HTML page ready for NavigateToString.
+            html: String,
         },
         /// Resize the existing preview window.
         Resize(RECT),
@@ -74,19 +120,49 @@ mod preview_handler {
     }
 
     // -----------------------------------------------------------------------
-    // Background thread that owns the child window.
+    // WebView2 async-creation state.
     //
-    // The COM STA thread must never create a visible child window of a
-    // cross-process parent while Explorer's UI thread is blocked on a COM
-    // call — that causes a WM_SYNCPAINT deadlock.  By moving all window
-    // operations to this thread, we ensure they happen only after all COM
-    // calls have returned and Explorer's thread is free.
+    // WebView2 creation is two-phase (env → controller), both async.  The COM
+    // callbacks fire on this thread during DispatchMessageW.  We store their
+    // results in Mutex<Option<T>> arcs that are shared between the callbacks
+    // and the poll loop below, all on the same thread.
+    // -----------------------------------------------------------------------
+    type EnvSlot  = Arc<Mutex<Option<Result<ICoreWebView2Environment>>>>;
+    type CtrlSlot = Arc<Mutex<Option<Result<ICoreWebView2Controller>>>>;
+
+    #[derive(PartialEq)]
+    enum WvStage {
+        WaitingEnv,
+        WaitingCtrl,
+        Ready,
+        Failed,
+    }
+
+    struct WvCreation {
+        env_slot:  EnvSlot,
+        ctrl_slot: CtrlSlot,
+        stage:     WvStage,
+        html:      String,
+        bounds:    RECT,
+    }
+
+    struct ActivePreview {
+        container:  HWND,
+        creation:   Option<WvCreation>,
+        controller: Option<ICoreWebView2Controller>,
+    }
+
+    // -----------------------------------------------------------------------
+    // Background thread that owns the child window and WebView2 controller.
+    //
+    // All window and WebView2 operations live here.  The COM STA thread sends
+    // commands via the bounded channel and never touches HWNDs or COM objects
+    // directly — this prevents the WM_SYNCPAINT cross-process deadlock.
     // -----------------------------------------------------------------------
     struct PreviewThread {
-        tx: mpsc::SyncSender<PreviewCmd>,
-        /// Shared handle so IOleWindow::GetWindow can return it.
+        tx:         mpsc::SyncSender<PreviewCmd>,
         child_hwnd: Arc<Mutex<isize>>,
-        handle: Option<thread::JoinHandle<()>>,
+        handle:     Option<thread::JoinHandle<()>>,
     }
 
     impl PreviewThread {
@@ -97,11 +173,7 @@ mod preview_handler {
             let handle = thread::spawn(move || {
                 preview_window_thread(rx, child_clone);
             });
-            PreviewThread {
-                tx,
-                child_hwnd,
-                handle: Some(handle),
-            }
+            PreviewThread { tx, child_hwnd, handle: Some(handle) }
         }
 
         fn send(&self, cmd: PreviewCmd) {
@@ -127,29 +199,35 @@ mod preview_handler {
         rx: mpsc::Receiver<PreviewCmd>,
         child_hwnd: Arc<Mutex<isize>>,
     ) {
-        let mut local_child = HWND::default();
+        let _com = ComInit::apartment_threaded();
+        let mut active: Option<ActivePreview> = None;
         let mut msg = MSG::default();
 
         loop {
-            // Process all pending commands (non-blocking).
+            // ---- 1. Process all pending commands (non-blocking). ----
             loop {
                 match rx.try_recv() {
-                    Ok(PreviewCmd::Show { parent, bounds, content }) => {
-                        if !local_child.is_invalid() {
-                            unsafe { let _ = DestroyWindow(local_child); }
+                    Ok(PreviewCmd::Show { parent, bounds, html }) => {
+                        // Tear down whatever is currently showing.
+                        if let Some(prev) = active.take() {
+                            teardown_active(prev);
                         }
-                        local_child = create_child(parent.hwnd(), bounds, &content);
-                        *child_hwnd.lock().unwrap() = local_child.0 as isize;
-                        log(&format!("thread: child={:?}", local_child));
+                        // Create container window and kick off async WebView2 creation.
+                        active = start_preview(
+                            parent.hwnd(), bounds, html, &child_hwnd,
+                        );
+                        if let Some(ref a) = active {
+                            log(&format!("thread: child={:?}", a.container));
+                        }
                     }
                     Ok(PreviewCmd::Resize(bounds)) => {
-                        if !local_child.is_invalid() {
-                            resize(local_child, bounds);
+                        if let Some(ref mut a) = active {
+                            resize_active(a, bounds);
                         }
                     }
                     Ok(PreviewCmd::Destroy) => {
-                        if !local_child.is_invalid() {
-                            unsafe { let _ = DestroyWindow(local_child); }
+                        if let Some(prev) = active.take() {
+                            teardown_active(prev);
                         }
                         *child_hwnd.lock().unwrap() = 0;
                         return;
@@ -158,10 +236,18 @@ mod preview_handler {
                 }
             }
 
-            // Drain Win32 messages so the child window paints correctly.
+            // ---- 2. Advance WebView2 creation if still in progress. ----
+            if let Some(ref mut a) = active {
+                poll_creation(a);
+            }
+
+            // ---- 3. Drain Win32 messages so WebView2 callbacks fire. ----
             unsafe {
                 while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                     if msg.message == WM_QUIT {
+                        if let Some(prev) = active.take() {
+                            teardown_active(prev);
+                        }
                         return;
                     }
                     let _ = TranslateMessage(&msg);
@@ -169,157 +255,421 @@ mod preview_handler {
                 }
             }
 
-            // Sleep briefly to avoid a busy-loop.
+            // ---- 4. Brief yield to avoid busy-loop. ----
             thread::sleep(std::time::Duration::from_millis(16));
         }
     }
 
     // -----------------------------------------------------------------------
-    // Font — created once per DLL load, never deleted (stock-like lifetime).
-    // Consolas 10pt ClearType: readable monospace that shows MD syntax well.
+    // Create the container HWND and kick off async WebView2 env creation.
+    // Returns None only if CreateWindowExW itself fails.
     // -----------------------------------------------------------------------
-    static PREVIEW_FONT: OnceLock<isize> = OnceLock::new();
-
-    fn preview_font() -> isize {
-        *PREVIEW_FONT.get_or_init(|| unsafe {
-            use windows::Win32::Graphics::Gdi::{
-                CreateFontW, FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY,
-            };
-            let face: Vec<u16> = "Consolas\0".encode_utf16().collect();
-            let hf = CreateFontW(
-                -13,   // height ≈ 10pt at 96 dpi (negative = char height)
-                0,     // width — let GDI choose aspect ratio
-                0, 0,  // escapement, orientation
-                400,   // FW_NORMAL
-                0, 0, 0, // italic, underline, strikeout
-                FONT_CHARSET(0),             // ANSI_CHARSET
-                FONT_OUTPUT_PRECISION(0),    // OUT_DEFAULT_PRECIS
-                FONT_CLIP_PRECISION(0),      // CLIP_DEFAULT_PRECIS
-                FONT_QUALITY(5),             // CLEARTYPE_QUALITY
-                0x31,  // FIXED_PITCH | FF_MODERN
-                PCWSTR(face.as_ptr()),
-            );
-            hf.0 as isize
-        })
-    }
-
-    // Padding inset (pixels) applied on every edge so text never touches the
-    // pane border. EM_SETMARGINS adds an extra left/right gutter inside the
-    // control on top of this.
-    const EDGE_PAD: i32 = 8;
-    // Inner left/right margin sent via EM_SETMARGINS (pixels).
-    const INNER_MARGIN: u16 = 8;
-    // Maximum UTF-8 bytes we pass to the EDIT control.
-    const PREVIEW_BYTE_LIMIT: usize = 512 * 1024;
-
-    fn create_child(parent: HWND, bounds: RECT, text: &str) -> HWND {
+    fn start_preview(
+        parent: HWND,
+        bounds: RECT,
+        html: String,
+        child_hwnd: &Arc<Mutex<isize>>,
+    ) -> Option<ActivePreview> {
         if parent.is_invalid() {
-            return HWND::default();
+            return None;
         }
+        let w = (bounds.right  - bounds.left).max(1);
+        let h = (bounds.bottom - bounds.top ).max(1);
 
-        // Inset the child rect so content has breathing room on all sides.
-        let x = EDGE_PAD;
-        let y = EDGE_PAD;
-        let w = ((bounds.right - bounds.left) - EDGE_PAD * 2).max(1);
-        let h = ((bounds.bottom - bounds.top) - EDGE_PAD * 2).max(1);
-
-        let class: Vec<u16> = "EDIT\0".encode_utf16().collect();
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
         let empty: Vec<u16> = "\0".encode_utf16().collect();
-        unsafe {
+
+        let container = unsafe {
             match CreateWindowExW(
                 WS_EX_NOPARENTNOTIFY,
                 PCWSTR(class.as_ptr()),
                 PCWSTR(empty.as_ptr()),
-                // ES_MULTILINE without ES_AUTOHSCROLL = word-wrap at window width.
-                // ES_AUTOVSCROLL omitted: it auto-scrolls to end on text insert
-                // which is wrong for a top-of-file preview.
-                WS_CHILD | WS_VSCROLL
-                    | windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(
-                        (ES_MULTILINE | ES_READONLY) as u32,
-                    ),
-                x, y, w, h,
+                WS_CHILD | WS_VISIBLE,
+                0, 0, w, h,
                 Some(parent),
                 None, None, None,
             ) {
-                Ok(hwnd) => {
-                    // 1. Raise text limit before setting content (default ~32 KB).
-                    //    PREVIEW_BYTE_LIMIT bytes UTF-8 ≤ PREVIEW_BYTE_LIMIT UTF-16
-                    //    code units, so using the byte count as the TCHAR limit is
-                    //    safe (it may be slightly generous, never too tight).
-                    let _ = SendMessageW(
-                        hwnd,
-                        EM_SETLIMITTEXT,
-                        Some(WPARAM(PREVIEW_BYTE_LIMIT)),
-                        Some(LPARAM(0)),
-                    );
-
-                    // 2. Apply font before first paint.
-                    let _ = SendMessageW(
-                        hwnd,
-                        WM_SETFONT,
-                        Some(WPARAM(preview_font() as usize)),
-                        Some(LPARAM(1)), // redraw = TRUE
-                    );
-
-                    // 3. Left/right inner margin (EM_SETMARGINS).
-                    //    WPARAM: EC_LEFTMARGIN(1) | EC_RIGHTMARGIN(2) = 3
-                    //    LPARAM: low-word = left, high-word = right (pixels)
-                    let margin_param = (INNER_MARGIN as u32)
-                        | ((INNER_MARGIN as u32) << 16);
-                    let _ = SendMessageW(
-                        hwnd,
-                        EM_SETMARGINS,
-                        Some(WPARAM(3)), // EC_LEFTMARGIN | EC_RIGHTMARGIN
-                        Some(LPARAM(margin_param as isize)),
-                    );
-
-                    // 4. Set content.
-                    let txt: Vec<u16> =
-                        text.encode_utf16().chain(std::iter::once(0)).collect();
-                    let _ = SetWindowTextW(hwnd, PCWSTR(txt.as_ptr()));
-
-                    let _ = ShowWindow(hwnd, SW_SHOW);
-                    hwnd
-                }
+                Ok(h) => h,
                 Err(e) => {
                     log(&format!("CreateWindowExW failed: {e}"));
-                    HWND::default()
+                    return None;
                 }
             }
+        };
+
+        *child_hwnd.lock().unwrap() = container.0 as isize;
+
+        // Kick off async WebView2 environment creation.
+        let env_slot: EnvSlot = Arc::new(Mutex::new(None));
+        let env_slot_cb = Arc::clone(&env_slot);
+
+        let udf = webview2_user_data_folder();
+        let udf_w: Vec<u16> = udf.encode_utf16().chain(once(0)).collect();
+
+        let env_result = unsafe {
+            CreateCoreWebView2EnvironmentWithOptions(
+                PCWSTR::null(),
+                PCWSTR(udf_w.as_ptr()),
+                None,
+                &CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
+                    move |hr: Result<()>, env: Option<ICoreWebView2Environment>| {
+                        *env_slot_cb.lock().unwrap() = Some(
+                            hr.and_then(|_| env.ok_or_else(|| windows_core::Error::from(E_FAIL)))
+                        );
+                        Ok(())
+                    },
+                )),
+            )
+        };
+        if let Err(e) = env_result {
+            log(&format!("CreateCoreWebView2EnvironmentWithOptions failed: {e}"));
+            unsafe { let _ = DestroyWindow(container); }
+            *child_hwnd.lock().unwrap() = 0;
+            return None;
+        }
+
+        Some(ActivePreview {
+            container,
+            creation: Some(WvCreation {
+                env_slot,
+                ctrl_slot: Arc::new(Mutex::new(None)),
+                stage: WvStage::WaitingEnv,
+                html,
+                bounds,
+            }),
+            controller: None,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Advance WebView2 creation state machine one step.
+    // Called each loop iteration after message pumping so callbacks have fired.
+    // -----------------------------------------------------------------------
+    fn poll_creation(active: &mut ActivePreview) {
+        let creation = match active.creation.as_mut() {
+            Some(c) if c.stage != WvStage::Ready && c.stage != WvStage::Failed => c,
+            _ => return,
+        };
+
+        match creation.stage {
+            WvStage::WaitingEnv => {
+                let env_res = creation.env_slot.lock().unwrap().take();
+                match env_res {
+                    Some(Ok(env)) => {
+                        // Got environment — start controller creation.
+                        let ctrl_slot_cb = Arc::clone(&creation.ctrl_slot);
+                        let container = active.container;
+                        let result = unsafe {
+                            env.CreateCoreWebView2Controller(
+                                container,
+                                &CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
+                                    move |hr: Result<()>, ctrl: Option<ICoreWebView2Controller>| {
+                                        *ctrl_slot_cb.lock().unwrap() = Some(
+                                            hr.and_then(|_| ctrl.ok_or_else(|| windows_core::Error::from(E_FAIL)))
+                                        );
+                                        Ok(())
+                                    },
+                                )),
+                            )
+                        };
+                        if let Err(e) = result {
+                            log(&format!("CreateCoreWebView2Controller failed: {e}"));
+                            creation.stage = WvStage::Failed;
+                        } else {
+                            creation.stage = WvStage::WaitingCtrl;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        log(&format!("WebView2 environment creation failed: {e}"));
+                        creation.stage = WvStage::Failed;
+                    }
+                    None => {}
+                }
+            }
+            WvStage::WaitingCtrl => {
+                let ctrl_res = creation.ctrl_slot.lock().unwrap().take();
+                match ctrl_res {
+                    Some(Ok(ctrl)) => {
+                        // Got controller — set bounds, show, navigate.
+                        let bounds = creation.bounds;
+                        let w = (bounds.right  - bounds.left).max(1);
+                        let h = (bounds.bottom - bounds.top ).max(1);
+                        let wv_rect = RECT { left: 0, top: 0, right: w, bottom: h };
+
+                        let ok = unsafe {
+                            ctrl.SetBounds(wv_rect)
+                                .and_then(|_| ctrl.SetIsVisible(true))
+                                .and_then(|_| {
+                                    let wv: ICoreWebView2 = ctrl.CoreWebView2()?;
+                                    let html_w: Vec<u16> = creation.html
+                                        .encode_utf16()
+                                        .chain(once(0))
+                                        .collect();
+                                    wv.NavigateToString(PCWSTR(html_w.as_ptr()))
+                                })
+                        };
+                        if let Err(e) = ok {
+                            log(&format!("WebView2 setup failed: {e}"));
+                        }
+                        active.controller = Some(ctrl);
+                        creation.stage = WvStage::Ready;
+                        // Drop the creation arcs now that we're done.
+                        active.creation = None;
+                    }
+                    Some(Err(e)) => {
+                        log(&format!("WebView2 controller creation failed: {e}"));
+                        creation.stage = WvStage::Failed;
+                    }
+                    None => {}
+                }
+            }
+            WvStage::Ready | WvStage::Failed => {}
         }
     }
 
-    fn resize(hwnd: HWND, bounds: RECT) {
-        if hwnd.is_invalid() {
+    // -----------------------------------------------------------------------
+    // Resize both the container window and the WebView2 controller.
+    // -----------------------------------------------------------------------
+    fn resize_active(active: &mut ActivePreview, bounds: RECT) {
+        if active.container.is_invalid() {
             return;
         }
-        // Keep the same EDGE_PAD inset as create_child so the margin is stable
-        // as the user resizes the preview pane.
-        let w = ((bounds.right - bounds.left) - EDGE_PAD * 2).max(1);
-        let h = ((bounds.bottom - bounds.top) - EDGE_PAD * 2).max(1);
+        let w = (bounds.right  - bounds.left).max(1);
+        let h = (bounds.bottom - bounds.top ).max(1);
         unsafe {
-            let _ = MoveWindow(hwnd, EDGE_PAD, EDGE_PAD, w, h, true);
+            let _ = MoveWindow(active.container, 0, 0, w, h, true);
+        }
+        // Update pending bounds so the controller gets the right size when it arrives.
+        if let Some(ref mut c) = active.creation {
+            c.bounds = bounds;
+        }
+        // Resize an already-live controller.
+        if let Some(ref ctrl) = active.controller {
+            let wv_rect = RECT { left: 0, top: 0, right: w, bottom: h };
+            unsafe { let _ = ctrl.SetBounds(wv_rect); }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Close WebView2 controller and destroy the container window.
+    // -----------------------------------------------------------------------
+    fn teardown_active(active: ActivePreview) {
+        if let Some(ctrl) = active.controller {
+            unsafe { let _ = ctrl.Close(); }
+        }
+        if !active.container.is_invalid() {
+            unsafe { let _ = DestroyWindow(active.container); }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // User data folder accessible from Low-Integrity (prevhost.exe sandbox).
+    // Mirrors the log-file path: %USERPROFILE%\AppData\Local\Temp\Low\
+    // -----------------------------------------------------------------------
+    fn webview2_user_data_folder() -> String {
+        if let Ok(up) = env::var("USERPROFILE") {
+            let p = std::path::PathBuf::from(up)
+                .join("AppData")
+                .join("Local")
+                .join("Temp")
+                .join("Low")
+                .join("mdview-webview2");
+            let _ = fs::create_dir_all(&p);
+            if let Some(s) = p.to_str() {
+                return s.to_owned();
+            }
+        }
+        let p = env::temp_dir().join("mdview-webview2");
+        let _ = fs::create_dir_all(&p);
+        p.to_str().unwrap_or("mdview-webview2").to_owned()
+    }
+
+    // -----------------------------------------------------------------------
+    // Content rendering
+    // -----------------------------------------------------------------------
+    const PREVIEW_BYTE_LIMIT: usize = 512 * 1024;
+
+    fn render_preview_html(path: &str) -> String {
+        if path.is_empty() {
+            return error_page("No file path provided.");
+        }
+        let source = match fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => return error_page(&format!("Cannot read file: {}", e)),
+        };
+        // Truncate large files at a char boundary and append a notice in
+        // Markdown so the rendered output looks intentional, not broken.
+        let source = if source.len() > PREVIEW_BYTE_LIMIT {
+            let mut end = PREVIEW_BYTE_LIMIT;
+            while !source.is_char_boundary(end) {
+                end -= 1;
+            }
+            let mut s = source[..end].to_string();
+            s.push_str(
+                "\n\n---\n\n*\\[mdview: file exceeds 512 KB — \
+                 preview truncated. Open in editor for full content.\\]*\n",
+            );
+            s
+        } else {
+            source
+        };
+
+        let doc = MarkdownEngine::default().render(&source);
+        let snap = current_snapshot();
+        let css_vars = tokens_from_snapshot(&snap).to_css_vars();
+        build_html_page(&doc.html, &css_vars)
+    }
+
+    fn error_page(msg: &str) -> String {
+        let escaped = msg
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        build_html_page(
+            &format!("<p style=\"color:var(--mdv-muted-text,#b6b6b6);font-style:italic\">{escaped}</p>"),
+            "",
+        )
+    }
+
+    fn build_html_page(body_html: &str, css_vars: &str) -> String {
+        format!(
+            r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="color-scheme" content="dark light">
+<style>
+{css_vars}
+{PREVIEW_CSS}
+</style>
+</head>
+<body><article class="md-body">
+{body_html}
+</article></body>
+</html>"#,
+            css_vars = css_vars,
+            body_html = body_html,
+        )
+    }
+
+    // Minimal but complete CSS for the preview pane.
+    // Uses --mdv-* variables emitted by base_styles::ThemeTokens::to_css_vars().
+    const PREVIEW_CSS: &str = r#"
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  background: var(--mdv-bg, #1e1e1e);
+  color:      var(--mdv-text, #f3f3f3);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+body {
+  margin: 0;
+  padding: 16px 20px 32px;
+}
+
+.md-body {
+  max-width: 860px;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin-top: 1.4em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+}
+h1 { font-size: 1.9em; border-bottom: 1px solid var(--mdv-border, #3c3c3c); padding-bottom: 0.25em; }
+h2 { font-size: 1.45em; border-bottom: 1px solid var(--mdv-border, #3c3c3c); padding-bottom: 0.2em; }
+h3 { font-size: 1.2em; }
+h4, h5, h6 { font-size: 1em; }
+
+p { margin: 0.75em 0; }
+
+a { color: var(--mdv-accent, #0a84ff); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.88em;
+  background: var(--mdv-code-bg, #2d2d2d);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+
+pre {
+  background: var(--mdv-code-bg, #2d2d2d);
+  border: 1px solid var(--mdv-border, #3c3c3c);
+  border-radius: 6px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.87em;
+}
+
+blockquote {
+  margin: 0.75em 0;
+  padding: 0.5em 0 0.5em 1em;
+  border-left: 3px solid var(--mdv-accent, #0a84ff);
+  color: var(--mdv-muted-text, #b6b6b6);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 0.93em;
+}
+th, td {
+  border: 1px solid var(--mdv-border, #3c3c3c);
+  padding: 6px 12px;
+  text-align: left;
+}
+th { background: var(--mdv-surface, #252526); }
+tr:nth-child(even) { background: var(--mdv-surface, #252526); }
+
+img { max-width: 100%; height: auto; }
+
+hr {
+  border: none;
+  border-top: 1px solid var(--mdv-border, #3c3c3c);
+  margin: 1.5em 0;
+}
+
+ul, ol { padding-left: 1.5em; margin: 0.5em 0; }
+li { margin: 0.25em 0; }
+
+/* Task-list checkboxes (comrak) */
+input[type="checkbox"] {
+  margin-right: 0.4em;
+  accent-color: var(--mdv-accent, #0a84ff);
+}
+
+del { color: var(--mdv-muted-text, #b6b6b6); }
+"#;
 
     // -----------------------------------------------------------------------
     // Handler state (on the COM STA thread)
     // -----------------------------------------------------------------------
     #[derive(Default)]
     struct State {
-        file_path: Option<String>,
-        parent_hwnd: HWND,
-        bounds: RECT,
-        site: Option<IUnknown>,
-        frame: Option<IPreviewHandlerFrame>,
+        file_path:       Option<String>,
+        parent_hwnd:     HWND,
+        bounds:          RECT,
+        site:            Option<IUnknown>,
+        frame:           Option<IPreviewHandlerFrame>,
         /// DoPreview was called; waiting for SetRect to supply real bounds.
         preview_pending: bool,
     }
 
     #[implement(IInitializeWithFile, IObjectWithSite, IOleWindow, IPreviewHandler)]
     pub struct MarkdownPreviewHandler {
-        state: Mutex<State>,
-        /// Lives on the background thread; None until first DoPreview+SetRect.
+        state:   Mutex<State>,
+        /// Background window thread; None until first DoPreview+SetRect.
         preview: Mutex<Option<PreviewThread>>,
     }
 
@@ -328,7 +678,7 @@ mod preview_handler {
             ACTIVE_OBJECTS.fetch_add(1, Ordering::SeqCst);
             log("new");
             Self {
-                state: Mutex::new(State::default()),
+                state:   Mutex::new(State::default()),
                 preview: Mutex::new(None),
             }
         }
@@ -377,7 +727,6 @@ mod preview_handler {
     #[allow(non_snake_case)]
     impl IOleWindow_Impl for MarkdownPreviewHandler_Impl {
         fn GetWindow(&self) -> Result<HWND> {
-            // Return our child window if created, otherwise the host window.
             if let Ok(p) = self.preview.lock() {
                 if let Some(pt) = p.as_ref() {
                     let c = pt.child();
@@ -409,7 +758,8 @@ mod preview_handler {
             state.bounds = unsafe { *prect };
             log(&format!(
                 "SetWindow hwnd={:?} rect=({},{},{},{})",
-                hwnd, state.bounds.left, state.bounds.top,
+                hwnd,
+                state.bounds.left, state.bounds.top,
                 state.bounds.right, state.bounds.bottom
             ));
             Ok(())
@@ -421,8 +771,6 @@ mod preview_handler {
             }
             let rect = unsafe { *prect };
 
-            // Collect everything we need under the state lock, then release it
-            // before touching the preview lock (consistent lock ordering).
             let (do_show, parent, path) = {
                 let mut state = self.state.lock().map_err(|_| E_FAIL)?;
                 state.bounds = rect;
@@ -440,8 +788,7 @@ mod preview_handler {
             ));
 
             if do_show {
-                // File read happens outside both locks.
-                let content = read_file(&path.unwrap_or_default());
+                let html = render_preview_html(&path.unwrap_or_default());
                 let mut preview = self.preview.lock().map_err(|_| E_FAIL)?;
                 if preview.is_none() {
                     *preview = Some(PreviewThread::new());
@@ -450,14 +797,12 @@ mod preview_handler {
                     pt.send(PreviewCmd::Show {
                         parent: parent.into(),
                         bounds: rect,
-                        content,
+                        html,
                     });
                 }
-            } else {
-                if let Ok(preview) = self.preview.lock() {
-                    if let Some(pt) = preview.as_ref() {
-                        pt.send(PreviewCmd::Resize(rect));
-                    }
+            } else if let Ok(preview) = self.preview.lock() {
+                if let Some(pt) = preview.as_ref() {
+                    pt.send(PreviewCmd::Resize(rect));
                 }
             }
 
@@ -465,9 +810,6 @@ mod preview_handler {
         }
 
         fn DoPreview(&self) -> Result<()> {
-            // If we already have bounds (e.g. switching files while pane is
-            // open), trigger the show now — SetRect won't be called again.
-            // Otherwise defer to SetRect, which arrives with the real bounds.
             let (do_show, parent, path, bounds) = {
                 let mut state = self.state.lock().map_err(|_| E_FAIL)?;
                 let has_area = state.bounds.right > state.bounds.left
@@ -484,7 +826,7 @@ mod preview_handler {
             log(&format!("DoPreview — do_show={do_show}"));
 
             if do_show {
-                let content = read_file(&path.unwrap_or_default());
+                let html = render_preview_html(&path.unwrap_or_default());
                 let mut preview = self.preview.lock().map_err(|_| E_FAIL)?;
                 if preview.is_none() {
                     *preview = Some(PreviewThread::new());
@@ -493,7 +835,7 @@ mod preview_handler {
                     pt.send(PreviewCmd::Show {
                         parent: parent.into(),
                         bounds,
-                        content,
+                        html,
                     });
                 }
             }
@@ -505,14 +847,13 @@ mod preview_handler {
             log("Unload");
             {
                 let mut state = self.state.lock().map_err(|_| E_FAIL)?;
-                state.file_path = None;
-                state.frame = None;
-                state.site = None;
+                state.file_path       = None;
+                state.frame           = None;
+                state.site            = None;
                 state.preview_pending = false;
             }
-            // Drop the preview thread (sends Destroy + joins).
             if let Ok(mut preview) = self.preview.lock() {
-                preview.take(); // Drop triggers PreviewThread::drop
+                preview.take(); // Drop triggers PreviewThread::drop → Destroy + join
             }
             Ok(())
         }
@@ -533,33 +874,6 @@ mod preview_handler {
                 }
             }
             Err(windows::core::Error::from(S_FALSE))
-        }
-    }
-
-    fn read_file(path: &str) -> String {
-        if path.is_empty() {
-            return String::from("[mdview] No file.");
-        }
-        match fs::read_to_string(path) {
-            Ok(text) => {
-                if text.len() > PREVIEW_BYTE_LIMIT {
-                    // Truncate at a char boundary so UTF-8 slicing is safe.
-                    let mut end = PREVIEW_BYTE_LIMIT;
-                    while !text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    format!(
-                        "{}\n\n\
-                        ── [mdview: file exceeds {} KB; preview truncated. \
-                        Open in editor for full content.] ──",
-                        &text[..end],
-                        PREVIEW_BYTE_LIMIT / 1024,
-                    )
-                } else {
-                    text
-                }
-            }
-            Err(e) => format!("[mdview] Cannot read {path}: {e}"),
         }
     }
 

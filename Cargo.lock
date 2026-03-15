@@ -4641,6 +4641,10 @@ dependencies = [
 name = "win-preview-handler"
 version = "0.1.0"
 dependencies = [
+ "base-styles",
+ "md-engine",
+ "webview2-com",
+ "win-theme-watcher",
  "windows",
  "windows-core 0.61.2",
 ]
