@@ -30495,18 +30495,18 @@
       const link = target.closest("a[href]");
       if (link) {
         const href = link.getAttribute("href") ?? "";
-        const protocol = link.protocol;
-        if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
-          event.preventDefault();
-          void openExternalLink(link.href).catch(console.error);
-          return;
-        }
         if (href.startsWith("#")) {
           const targetElement = article.querySelector(href);
           if (targetElement) {
             event.preventDefault();
             targetElement.scrollIntoView({ behavior: "smooth" });
           }
+          return;
+        }
+        const protocol = link.protocol;
+        if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
+          event.preventDefault();
+          void openExternalLink(link.href).catch(console.error);
           return;
         }
       }
