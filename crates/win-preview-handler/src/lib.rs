@@ -7,14 +7,15 @@ mod preview_handler {
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{mpsc, Arc, Mutex, OnceLock};
     use std::thread;
 
     use windows::core::{implement, GUID, IUnknown, PCWSTR, Result, HRESULT};
     use windows::Win32::Foundation::{
         CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_INVALIDARG,
-        E_POINTER, HWND, RECT, S_FALSE, S_OK,
+        E_POINTER, HWND, LPARAM, RECT, S_FALSE, S_OK, WPARAM,
     };
+    
     use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
     use windows::Win32::System::Ole::{
         IObjectWithSite, IObjectWithSite_Impl, IOleWindow, IOleWindow_Impl,
@@ -27,10 +28,11 @@ mod preview_handler {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, DispatchMessageW, MoveWindow, MSG,
-        PeekMessageW, SetWindowTextW, ShowWindow, SW_SHOW, TranslateMessage,
-        WM_QUIT, WS_CHILD, WS_EX_NOPARENTNOTIFY, WS_VISIBLE, WS_VSCROLL,
-        ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, PM_REMOVE,
+        PeekMessageW, SendMessageW, SetWindowTextW, ShowWindow, SW_SHOW,
+        TranslateMessage, WM_QUIT, WM_SETFONT, WS_CHILD, WS_EX_NOPARENTNOTIFY,
+        WS_VSCROLL, ES_MULTILINE, ES_READONLY, PM_REMOVE,
     };
+    use windows::Win32::UI::Controls::{EM_SETLIMITTEXT, EM_SETMARGINS};
     use windows_core::{BOOL, Interface, Ref};
 
     static ACTIVE_OBJECTS: AtomicI32 = AtomicI32::new(0);
@@ -172,12 +174,55 @@ mod preview_handler {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Font — created once per DLL load, never deleted (stock-like lifetime).
+    // Consolas 10pt ClearType: readable monospace that shows MD syntax well.
+    // -----------------------------------------------------------------------
+    static PREVIEW_FONT: OnceLock<isize> = OnceLock::new();
+
+    fn preview_font() -> isize {
+        *PREVIEW_FONT.get_or_init(|| unsafe {
+            use windows::Win32::Graphics::Gdi::{
+                CreateFontW, FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY,
+            };
+            let face: Vec<u16> = "Consolas\0".encode_utf16().collect();
+            let hf = CreateFontW(
+                -13,   // height ≈ 10pt at 96 dpi (negative = char height)
+                0,     // width — let GDI choose aspect ratio
+                0, 0,  // escapement, orientation
+                400,   // FW_NORMAL
+                0, 0, 0, // italic, underline, strikeout
+                FONT_CHARSET(0),             // ANSI_CHARSET
+                FONT_OUTPUT_PRECISION(0),    // OUT_DEFAULT_PRECIS
+                FONT_CLIP_PRECISION(0),      // CLIP_DEFAULT_PRECIS
+                FONT_QUALITY(5),             // CLEARTYPE_QUALITY
+                0x31,  // FIXED_PITCH | FF_MODERN
+                PCWSTR(face.as_ptr()),
+            );
+            hf.0 as isize
+        })
+    }
+
+    // Padding inset (pixels) applied on every edge so text never touches the
+    // pane border. EM_SETMARGINS adds an extra left/right gutter inside the
+    // control on top of this.
+    const EDGE_PAD: i32 = 8;
+    // Inner left/right margin sent via EM_SETMARGINS (pixels).
+    const INNER_MARGIN: u16 = 8;
+    // Maximum UTF-8 bytes we pass to the EDIT control.
+    const PREVIEW_BYTE_LIMIT: usize = 512 * 1024;
+
     fn create_child(parent: HWND, bounds: RECT, text: &str) -> HWND {
         if parent.is_invalid() {
             return HWND::default();
         }
-        let w = (bounds.right - bounds.left).max(1);
-        let h = (bounds.bottom - bounds.top).max(1);
+
+        // Inset the child rect so content has breathing room on all sides.
+        let x = EDGE_PAD;
+        let y = EDGE_PAD;
+        let w = ((bounds.right - bounds.left) - EDGE_PAD * 2).max(1);
+        let h = ((bounds.bottom - bounds.top) - EDGE_PAD * 2).max(1);
+
         let class: Vec<u16> = "EDIT\0".encode_utf16().collect();
         let empty: Vec<u16> = "\0".encode_utf16().collect();
         unsafe {
@@ -185,18 +230,54 @@ mod preview_handler {
                 WS_EX_NOPARENTNOTIFY,
                 PCWSTR(class.as_ptr()),
                 PCWSTR(empty.as_ptr()),
-                WS_CHILD | WS_VISIBLE | WS_VSCROLL
+                // ES_MULTILINE without ES_AUTOHSCROLL = word-wrap at window width.
+                // ES_AUTOVSCROLL omitted: it auto-scrolls to end on text insert
+                // which is wrong for a top-of-file preview.
+                WS_CHILD | WS_VSCROLL
                     | windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(
-                        (ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32,
+                        (ES_MULTILINE | ES_READONLY) as u32,
                     ),
-                0, 0, w, h,
+                x, y, w, h,
                 Some(parent),
                 None, None, None,
             ) {
                 Ok(hwnd) => {
-                    // Set text via SetWindowTextW (EDIT ignores the creation name for large text)
-                    let txt: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+                    // 1. Raise text limit before setting content (default ~32 KB).
+                    //    PREVIEW_BYTE_LIMIT bytes UTF-8 ≤ PREVIEW_BYTE_LIMIT UTF-16
+                    //    code units, so using the byte count as the TCHAR limit is
+                    //    safe (it may be slightly generous, never too tight).
+                    let _ = SendMessageW(
+                        hwnd,
+                        EM_SETLIMITTEXT,
+                        Some(WPARAM(PREVIEW_BYTE_LIMIT)),
+                        Some(LPARAM(0)),
+                    );
+
+                    // 2. Apply font before first paint.
+                    let _ = SendMessageW(
+                        hwnd,
+                        WM_SETFONT,
+                        Some(WPARAM(preview_font() as usize)),
+                        Some(LPARAM(1)), // redraw = TRUE
+                    );
+
+                    // 3. Left/right inner margin (EM_SETMARGINS).
+                    //    WPARAM: EC_LEFTMARGIN(1) | EC_RIGHTMARGIN(2) = 3
+                    //    LPARAM: low-word = left, high-word = right (pixels)
+                    let margin_param = (INNER_MARGIN as u32)
+                        | ((INNER_MARGIN as u32) << 16);
+                    let _ = SendMessageW(
+                        hwnd,
+                        EM_SETMARGINS,
+                        Some(WPARAM(3)), // EC_LEFTMARGIN | EC_RIGHTMARGIN
+                        Some(LPARAM(margin_param as isize)),
+                    );
+
+                    // 4. Set content.
+                    let txt: Vec<u16> =
+                        text.encode_utf16().chain(std::iter::once(0)).collect();
                     let _ = SetWindowTextW(hwnd, PCWSTR(txt.as_ptr()));
+
                     let _ = ShowWindow(hwnd, SW_SHOW);
                     hwnd
                 }
@@ -212,10 +293,12 @@ mod preview_handler {
         if hwnd.is_invalid() {
             return;
         }
-        let w = (bounds.right - bounds.left).max(1);
-        let h = (bounds.bottom - bounds.top).max(1);
+        // Keep the same EDGE_PAD inset as create_child so the margin is stable
+        // as the user resizes the preview pane.
+        let w = ((bounds.right - bounds.left) - EDGE_PAD * 2).max(1);
+        let h = ((bounds.bottom - bounds.top) - EDGE_PAD * 2).max(1);
         unsafe {
-            let _ = MoveWindow(hwnd, 0, 0, w, h, true);
+            let _ = MoveWindow(hwnd, EDGE_PAD, EDGE_PAD, w, h, true);
         }
     }
 
@@ -459,8 +542,19 @@ mod preview_handler {
         }
         match fs::read_to_string(path) {
             Ok(text) => {
-                if text.len() > 8000 {
-                    format!("{}\n\n[mdview: truncated]", &text[..8000])
+                if text.len() > PREVIEW_BYTE_LIMIT {
+                    // Truncate at a char boundary so UTF-8 slicing is safe.
+                    let mut end = PREVIEW_BYTE_LIMIT;
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!(
+                        "{}\n\n\
+                        ── [mdview: file exceeds {} KB; preview truncated. \
+                        Open in editor for full content.] ──",
+                        &text[..end],
+                        PREVIEW_BYTE_LIMIT / 1024,
+                    )
                 } else {
                     text
                 }
