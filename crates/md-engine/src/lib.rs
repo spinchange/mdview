@@ -130,7 +130,7 @@ mod tests {
         let rendered = MarkdownEngine::default().render(doc);
 
         assert!(!rendered.html.contains("<script>"));
-        assert!(rendered.html.contains("&lt;script&gt;"));
+        assert!(rendered.html.contains("<!-- raw HTML omitted -->"));
         assert!(rendered.html.contains("Safe"));
     }
 
