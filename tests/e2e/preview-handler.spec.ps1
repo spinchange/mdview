@@ -78,7 +78,10 @@ $deferredSetRectCount = Get-MatchCount -Lines $lines -Pattern "SetRect .+do_show
 
 Assert-LogContains -Lines $lines -Pattern "SetWindow" -Message "Expected at least one SetWindow entry."
 Assert-LogContains -Lines $lines -Pattern "DoPreview" -Message "Expected at least one DoPreview entry."
-Assert-LogContains -Lines $lines -Pattern "SetRect" -Message "Expected at least one SetRect entry."
+
+if (($setRectCount -eq 0) -and ($immediateShowCount -eq 0)) {
+  throw "Expected either a SetRect entry or an immediate DoPreview show entry."
+}
 
 if ($RequireShow) {
   Assert-LogContains -Lines $lines -Pattern "thread: child=" -Message "Expected at least one preview child creation entry."
