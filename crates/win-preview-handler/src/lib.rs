@@ -2,36 +2,36 @@
 
 #[cfg(windows)]
 mod preview_handler {
-    use std::fs;
+    use std::env;
     use std::ffi::c_void;
-    use std::path::Path;
-    use std::sync::mpsc;
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
     use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::thread;
 
-    use base_styles::tokens_from_snapshot;
-    use md_engine::MarkdownEngine;
-    use settings_store::resolve_theme_snapshot;
-    use webview2_com::{
-        CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler,
-        CreateCoreWebView2EnvironmentCompletedHandler, Microsoft::Web::WebView2::Win32::*,
-    };
-    use win_theme_watcher::current_snapshot;
     use windows::core::{implement, GUID, IUnknown, PCWSTR, Result, HRESULT};
-    use windows_core::{BOOL, Error, Interface, Ref};
     use windows::Win32::Foundation::{
-        CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, COLORREF, E_FAIL, E_INVALIDARG,
+        CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_INVALIDARG,
         E_POINTER, HWND, RECT, S_FALSE, S_OK,
     };
-    use windows::Win32::Graphics::Gdi::{
-        CreateSolidBrush, DeleteObject, FillRect, GetDC, HBRUSH, InvalidateRect, ReleaseDC,
-    };
     use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
+    use windows::Win32::System::Ole::{
+        IObjectWithSite, IObjectWithSite_Impl, IOleWindow, IOleWindow_Impl,
+    };
     use windows::Win32::UI::Shell::PropertiesSystem::{
         IInitializeWithFile, IInitializeWithFile_Impl,
     };
-    use windows::Win32::UI::Shell::{IPreviewHandler, IPreviewHandler_Impl};
-    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, MSG};
+    use windows::Win32::UI::Shell::{
+        IPreviewHandler, IPreviewHandler_Impl, IPreviewHandlerFrame,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, DispatchMessageW, MoveWindow, MSG,
+        PeekMessageW, SetWindowTextW, ShowWindow, SW_SHOW, TranslateMessage,
+        WM_QUIT, WS_CHILD, WS_EX_NOPARENTNOTIFY, WS_VISIBLE, WS_VSCROLL,
+        ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, PM_REMOVE,
+    };
+    use windows_core::{BOOL, Interface, Ref};
 
     static ACTIVE_OBJECTS: AtomicI32 = AtomicI32::new(0);
 
@@ -39,26 +39,216 @@ mod preview_handler {
         GUID::from_u128(0x4f831ca2_0db6_4f14_a4f2_8ab7de6f6601);
     pub const PREVIEW_HANDLER_PROGID: &str = "mdview.PreviewHandler";
 
+    // -----------------------------------------------------------------------
+    // HWND wrapper that is safe to send across threads.
+    // We enforce correct thread usage by design: the preview thread owns the
+    // child window; the COM thread only sends commands via the channel.
+    // -----------------------------------------------------------------------
+    struct SendHwnd(pub isize);
+    unsafe impl Send for SendHwnd {}
+    impl SendHwnd {
+        fn hwnd(&self) -> HWND {
+            HWND(self.0 as *mut c_void)
+        }
+    }
+    impl From<HWND> for SendHwnd {
+        fn from(h: HWND) -> Self {
+            SendHwnd(h.0 as isize)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Commands sent from the COM (STA) thread to the preview window thread.
+    // -----------------------------------------------------------------------
+    enum PreviewCmd {
+        /// Create (or recreate) the preview window.
+        Show {
+            parent: SendHwnd,
+            bounds: RECT,
+            content: String,
+        },
+        /// Resize the existing preview window.
+        Resize(RECT),
+        /// Destroy the window and exit the thread.
+        Destroy,
+    }
+
+    // -----------------------------------------------------------------------
+    // Background thread that owns the child window.
+    //
+    // The COM STA thread must never create a visible child window of a
+    // cross-process parent while Explorer's UI thread is blocked on a COM
+    // call — that causes a WM_SYNCPAINT deadlock.  By moving all window
+    // operations to this thread, we ensure they happen only after all COM
+    // calls have returned and Explorer's thread is free.
+    // -----------------------------------------------------------------------
+    struct PreviewThread {
+        tx: mpsc::SyncSender<PreviewCmd>,
+        /// Shared handle so IOleWindow::GetWindow can return it.
+        child_hwnd: Arc<Mutex<isize>>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl PreviewThread {
+        fn new() -> Self {
+            let (tx, rx) = mpsc::sync_channel::<PreviewCmd>(8);
+            let child_hwnd = Arc::new(Mutex::new(0isize));
+            let child_clone = child_hwnd.clone();
+            let handle = thread::spawn(move || {
+                preview_window_thread(rx, child_clone);
+            });
+            PreviewThread {
+                tx,
+                child_hwnd,
+                handle: Some(handle),
+            }
+        }
+
+        fn send(&self, cmd: PreviewCmd) {
+            let _ = self.tx.try_send(cmd);
+        }
+
+        fn child(&self) -> HWND {
+            let v = *self.child_hwnd.lock().unwrap();
+            HWND(v as *mut c_void)
+        }
+    }
+
+    impl Drop for PreviewThread {
+        fn drop(&mut self) {
+            let _ = self.tx.try_send(PreviewCmd::Destroy);
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    fn preview_window_thread(
+        rx: mpsc::Receiver<PreviewCmd>,
+        child_hwnd: Arc<Mutex<isize>>,
+    ) {
+        let mut local_child = HWND::default();
+        let mut msg = MSG::default();
+
+        loop {
+            // Process all pending commands (non-blocking).
+            loop {
+                match rx.try_recv() {
+                    Ok(PreviewCmd::Show { parent, bounds, content }) => {
+                        if !local_child.is_invalid() {
+                            unsafe { let _ = DestroyWindow(local_child); }
+                        }
+                        local_child = create_child(parent.hwnd(), bounds, &content);
+                        *child_hwnd.lock().unwrap() = local_child.0 as isize;
+                        log(&format!("thread: child={:?}", local_child));
+                    }
+                    Ok(PreviewCmd::Resize(bounds)) => {
+                        if !local_child.is_invalid() {
+                            resize(local_child, bounds);
+                        }
+                    }
+                    Ok(PreviewCmd::Destroy) => {
+                        if !local_child.is_invalid() {
+                            unsafe { let _ = DestroyWindow(local_child); }
+                        }
+                        *child_hwnd.lock().unwrap() = 0;
+                        return;
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            // Drain Win32 messages so the child window paints correctly.
+            unsafe {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    if msg.message == WM_QUIT {
+                        return;
+                    }
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+
+            // Sleep briefly to avoid a busy-loop.
+            thread::sleep(std::time::Duration::from_millis(16));
+        }
+    }
+
+    fn create_child(parent: HWND, bounds: RECT, text: &str) -> HWND {
+        if parent.is_invalid() {
+            return HWND::default();
+        }
+        let w = (bounds.right - bounds.left).max(1);
+        let h = (bounds.bottom - bounds.top).max(1);
+        let class: Vec<u16> = "EDIT\0".encode_utf16().collect();
+        let empty: Vec<u16> = "\0".encode_utf16().collect();
+        unsafe {
+            match CreateWindowExW(
+                WS_EX_NOPARENTNOTIFY,
+                PCWSTR(class.as_ptr()),
+                PCWSTR(empty.as_ptr()),
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL
+                    | windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(
+                        (ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32,
+                    ),
+                0, 0, w, h,
+                Some(parent),
+                None, None, None,
+            ) {
+                Ok(hwnd) => {
+                    // Set text via SetWindowTextW (EDIT ignores the creation name for large text)
+                    let txt: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+                    let _ = SetWindowTextW(hwnd, PCWSTR(txt.as_ptr()));
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    hwnd
+                }
+                Err(e) => {
+                    log(&format!("CreateWindowExW failed: {e}"));
+                    HWND::default()
+                }
+            }
+        }
+    }
+
+    fn resize(hwnd: HWND, bounds: RECT) {
+        if hwnd.is_invalid() {
+            return;
+        }
+        let w = (bounds.right - bounds.left).max(1);
+        let h = (bounds.bottom - bounds.top).max(1);
+        unsafe {
+            let _ = MoveWindow(hwnd, 0, 0, w, h, true);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Handler state (on the COM STA thread)
+    // -----------------------------------------------------------------------
     #[derive(Default)]
     struct State {
         file_path: Option<String>,
         parent_hwnd: HWND,
         bounds: RECT,
-        environment: Option<ICoreWebView2Environment>,
-        controller: Option<ICoreWebView2Controller>,
-        webview: Option<ICoreWebView2>,
+        site: Option<IUnknown>,
+        frame: Option<IPreviewHandlerFrame>,
+        /// DoPreview was called; waiting for SetRect to supply real bounds.
+        preview_pending: bool,
     }
 
-    #[implement(IInitializeWithFile, IPreviewHandler)]
+    #[implement(IInitializeWithFile, IObjectWithSite, IOleWindow, IPreviewHandler)]
     pub struct MarkdownPreviewHandler {
         state: Mutex<State>,
+        /// Lives on the background thread; None until first DoPreview+SetRect.
+        preview: Mutex<Option<PreviewThread>>,
     }
 
     impl MarkdownPreviewHandler {
         pub fn new() -> Self {
             ACTIVE_OBJECTS.fetch_add(1, Ordering::SeqCst);
+            log("new");
             Self {
                 state: Mutex::new(State::default()),
+                preview: Mutex::new(None),
             }
         }
     }
@@ -66,6 +256,7 @@ mod preview_handler {
     impl Drop for MarkdownPreviewHandler {
         fn drop(&mut self) {
             ACTIVE_OBJECTS.fetch_sub(1, Ordering::SeqCst);
+            log("drop");
         }
     }
 
@@ -73,8 +264,55 @@ mod preview_handler {
     impl IInitializeWithFile_Impl for MarkdownPreviewHandler_Impl {
         fn Initialize(&self, pszfilepath: &PCWSTR, _grfmode: u32) -> Result<()> {
             let path = unsafe { pszfilepath.to_string()? };
+            log(&format!("Initialize path={path}"));
+            self.state.lock().map_err(|_| E_FAIL)?.file_path = Some(path);
+            Ok(())
+        }
+    }
+
+    #[allow(non_snake_case)]
+    impl IObjectWithSite_Impl for MarkdownPreviewHandler_Impl {
+        fn SetSite(&self, punksite: Ref<'_, IUnknown>) -> Result<()> {
             let mut state = self.state.lock().map_err(|_| E_FAIL)?;
-            state.file_path = Some(path);
+            let site = punksite.cloned();
+            log(&format!("SetSite has_site={}", site.is_some()));
+            state.frame = site
+                .as_ref()
+                .and_then(|s| s.cast::<IPreviewHandlerFrame>().ok());
+            state.site = site;
+            Ok(())
+        }
+
+        fn GetSite(&self, riid: *const GUID, ppvsite: *mut *mut c_void) -> Result<()> {
+            if riid.is_null() || ppvsite.is_null() {
+                return Err(E_POINTER.into());
+            }
+            let state = self.state.lock().map_err(|_| E_FAIL)?;
+            let site = state.site.as_ref().ok_or(E_FAIL)?;
+            unsafe { site.query(riid, ppvsite).ok() }
+        }
+    }
+
+    #[allow(non_snake_case)]
+    impl IOleWindow_Impl for MarkdownPreviewHandler_Impl {
+        fn GetWindow(&self) -> Result<HWND> {
+            // Return our child window if created, otherwise the host window.
+            if let Ok(p) = self.preview.lock() {
+                if let Some(pt) = p.as_ref() {
+                    let c = pt.child();
+                    if !c.is_invalid() {
+                        return Ok(c);
+                    }
+                }
+            }
+            let state = self.state.lock().map_err(|_| E_FAIL)?;
+            if state.parent_hwnd.is_invalid() {
+                return Err(E_FAIL.into());
+            }
+            Ok(state.parent_hwnd)
+        }
+
+        fn ContextSensitiveHelp(&self, _fentermode: BOOL) -> Result<()> {
             Ok(())
         }
     }
@@ -85,11 +323,14 @@ mod preview_handler {
             if prect.is_null() {
                 return Err(E_POINTER.into());
             }
-
             let mut state = self.state.lock().map_err(|_| E_FAIL)?;
             state.parent_hwnd = hwnd;
             state.bounds = unsafe { *prect };
-            apply_bounds(&state.controller, state.bounds)?;
+            log(&format!(
+                "SetWindow hwnd={:?} rect=({},{},{},{})",
+                hwnd, state.bounds.left, state.bounds.top,
+                state.bounds.right, state.bounds.bottom
+            ));
             Ok(())
         }
 
@@ -97,70 +338,101 @@ mod preview_handler {
             if prect.is_null() {
                 return Err(E_POINTER.into());
             }
+            let rect = unsafe { *prect };
 
-            let mut state = self.state.lock().map_err(|_| E_FAIL)?;
-            state.bounds = unsafe { *prect };
-            apply_bounds(&state.controller, state.bounds)?;
+            // Collect everything we need under the state lock, then release it
+            // before touching the preview lock (consistent lock ordering).
+            let (do_show, parent, path) = {
+                let mut state = self.state.lock().map_err(|_| E_FAIL)?;
+                state.bounds = rect;
+                let has_area = rect.right > rect.left && rect.bottom > rect.top;
+                let do_show = state.preview_pending && has_area;
+                if do_show {
+                    state.preview_pending = false;
+                }
+                (do_show, state.parent_hwnd, state.file_path.clone())
+            };
+
+            log(&format!(
+                "SetRect ({},{},{},{}) do_show={do_show}",
+                rect.left, rect.top, rect.right, rect.bottom
+            ));
+
+            if do_show {
+                // File read happens outside both locks.
+                let content = read_file(&path.unwrap_or_default());
+                let mut preview = self.preview.lock().map_err(|_| E_FAIL)?;
+                if preview.is_none() {
+                    *preview = Some(PreviewThread::new());
+                }
+                if let Some(pt) = preview.as_ref() {
+                    pt.send(PreviewCmd::Show {
+                        parent: parent.into(),
+                        bounds: rect,
+                        content,
+                    });
+                }
+            } else {
+                if let Ok(preview) = self.preview.lock() {
+                    if let Some(pt) = preview.as_ref() {
+                        pt.send(PreviewCmd::Resize(rect));
+                    }
+                }
+            }
+
             Ok(())
         }
 
         fn DoPreview(&self) -> Result<()> {
-            let (path, parent_hwnd, bounds, maybe_webview) = {
-                let state = self.state.lock().map_err(|_| E_FAIL)?;
-                let path = state.file_path.clone().ok_or(E_FAIL)?;
-                (path, state.parent_hwnd, state.bounds, state.webview.clone())
+            // If we already have bounds (e.g. switching files while pane is
+            // open), trigger the show now — SetRect won't be called again.
+            // Otherwise defer to SetRect, which arrives with the real bounds.
+            let (do_show, parent, path, bounds) = {
+                let mut state = self.state.lock().map_err(|_| E_FAIL)?;
+                let has_area = state.bounds.right > state.bounds.left
+                    && state.bounds.bottom > state.bounds.top;
+                if has_area {
+                    state.preview_pending = false;
+                    (true, state.parent_hwnd, state.file_path.clone(), state.bounds)
+                } else {
+                    state.preview_pending = true;
+                    (false, state.parent_hwnd, state.file_path.clone(), state.bounds)
+                }
             };
 
-            if parent_hwnd.is_invalid() {
-                return Err(E_FAIL.into());
-            }
+            log(&format!("DoPreview — do_show={do_show}"));
 
-            paint_parent_background(parent_hwnd);
-            let rendered = render_preview_page(&path);
-
-            if let Some(webview) = maybe_webview {
-                if let Err(err) = apply_virtual_host_mapping(&webview, &path) {
-                    eprintln!("[mdview-preview] virtual host mapping failed: {err}");
+            if do_show {
+                let content = read_file(&path.unwrap_or_default());
+                let mut preview = self.preview.lock().map_err(|_| E_FAIL)?;
+                if preview.is_none() {
+                    *preview = Some(PreviewThread::new());
                 }
-                navigate_to_markup(&webview, &rendered)?;
-                return Ok(());
+                if let Some(pt) = preview.as_ref() {
+                    pt.send(PreviewCmd::Show {
+                        parent: parent.into(),
+                        bounds,
+                        content,
+                    });
+                }
             }
 
-            let environment = create_webview_environment()?;
-            let controller = create_webview_controller(&environment, parent_hwnd)?;
-            apply_bounds(&Some(controller.clone()), bounds)?;
-            let webview = unsafe { controller.CoreWebView2()? };
-            if let Err(err) = apply_virtual_host_mapping(&webview, &path) {
-                eprintln!("[mdview-preview] virtual host mapping failed: {err}");
-            }
-            navigate_to_markup(&webview, &rendered)?;
-
-            let mut state = self.state.lock().map_err(|_| E_FAIL)?;
-            state.environment = Some(environment);
-            state.controller = Some(controller);
-            state.webview = Some(webview);
             Ok(())
         }
 
         fn Unload(&self) -> Result<()> {
-            let mut state = self.state.lock().map_err(|_| E_FAIL)?;
-            if let Some(webview) = state.webview.as_ref() {
-                if let Ok(webview3) = webview.cast::<ICoreWebView2_3>() {
-                    let host = CoTaskMemPWSTR::from("mdview.local");
-                    unsafe {
-                        let _ = webview3.ClearVirtualHostNameToFolderMapping(*host.as_ref().as_pcwstr());
-                    }
-                }
+            log("Unload");
+            {
+                let mut state = self.state.lock().map_err(|_| E_FAIL)?;
+                state.file_path = None;
+                state.frame = None;
+                state.site = None;
+                state.preview_pending = false;
             }
-            if let Some(controller) = state.controller.take() {
-                unsafe {
-                    let _ = controller.SetIsVisible(false);
-                    let _ = controller.Close();
-                }
+            // Drop the preview thread (sends Destroy + joins).
+            if let Ok(mut preview) = self.preview.lock() {
+                preview.take(); // Drop triggers PreviewThread::drop
             }
-            state.environment = None;
-            state.webview = None;
-            state.file_path = None;
             Ok(())
         }
 
@@ -169,180 +441,70 @@ mod preview_handler {
         }
 
         fn QueryFocus(&self) -> Result<HWND> {
-            let state = self.state.lock().map_err(|_| E_FAIL)?;
-            Ok(state.parent_hwnd)
+            Ok(self.state.lock().map_err(|_| E_FAIL)?.parent_hwnd)
         }
 
         fn TranslateAccelerator(&self, _pmsg: *const MSG) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    fn create_webview_environment() -> Result<ICoreWebView2Environment> {
-        let (tx, rx) = mpsc::channel();
-        CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
-            Box::new(|handler| unsafe {
-                CreateCoreWebView2Environment(&handler).map_err(webview2_com::Error::WindowsError)
-            }),
-            Box::new(move |error_code, environment| {
-                error_code?;
-                tx.send(environment.ok_or_else(|| Error::from(E_POINTER)))
-                    .map_err(|_| Error::from(E_FAIL))?;
-                Ok(())
-            }),
-        )
-        .map_err(|_| E_FAIL)?;
-
-        let environment = webview2_com::wait_with_pump(rx).map_err(|_| E_FAIL)?;
-        environment.map_err(|_| E_FAIL.into())
-    }
-
-    fn create_webview_controller(
-        environment: &ICoreWebView2Environment,
-        parent_hwnd: HWND,
-    ) -> Result<ICoreWebView2Controller> {
-        let environment = environment.clone();
-        let (tx, rx) = mpsc::channel();
-        CreateCoreWebView2ControllerCompletedHandler::wait_for_async_operation(
-            Box::new(move |handler| unsafe {
-                environment
-                    .CreateCoreWebView2Controller(parent_hwnd, &handler)
-                    .map_err(webview2_com::Error::WindowsError)
-            }),
-            Box::new(move |error_code, controller| {
-                error_code?;
-                tx.send(controller.ok_or_else(|| Error::from(E_POINTER)))
-                    .map_err(|_| Error::from(E_FAIL))?;
-                Ok(())
-            }),
-        )
-        .map_err(|_| E_FAIL)?;
-
-        let controller = webview2_com::wait_with_pump(rx).map_err(|_| E_FAIL)?;
-        controller.map_err(|_| E_FAIL.into())
-    }
-
-    fn apply_bounds(controller: &Option<ICoreWebView2Controller>, bounds: RECT) -> Result<()> {
-        if let Some(controller) = controller {
-            unsafe {
-                controller.SetBounds(bounds)?;
-                controller.SetIsVisible(true)?;
+            let state = self.state.lock().map_err(|_| E_FAIL)?;
+            if let Some(frame) = state.frame.as_ref() {
+                unsafe {
+                    return frame.TranslateAccelerator(_pmsg);
+                }
             }
+            Err(windows::core::Error::from(S_FALSE))
         }
-        Ok(())
     }
 
-    fn navigate_to_markup(webview: &ICoreWebView2, html: &str) -> Result<()> {
-        let html_utf16 = CoTaskMemPWSTR::from(html);
-        unsafe { webview.NavigateToString(*html_utf16.as_ref().as_pcwstr()) }
-    }
-
-    fn apply_virtual_host_mapping(webview: &ICoreWebView2, file_path: &str) -> Result<()> {
-        let mapped_dir = parent_dir_for_mapping(file_path)?;
-        let webview3: ICoreWebView2_3 = webview.cast()?;
-        let host = CoTaskMemPWSTR::from("mdview.local");
-        let folder = CoTaskMemPWSTR::from(mapped_dir.as_str());
-        unsafe {
-            webview3.SetVirtualHostNameToFolderMapping(
-                *host.as_ref().as_pcwstr(),
-                *folder.as_ref().as_pcwstr(),
-                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW,
-            )?;
+    fn read_file(path: &str) -> String {
+        if path.is_empty() {
+            return String::from("[mdview] No file.");
         }
-        Ok(())
-    }
-
-    fn parent_dir_for_mapping(file_path: &str) -> Result<String> {
-        let parent = Path::new(file_path).parent().ok_or(E_FAIL)?;
-        if parent.as_os_str().is_empty() {
-            return Err(E_FAIL.into());
-        }
-        Ok(parent.to_string_lossy().into_owned())
-    }
-
-    fn render_preview_page(path: &str) -> String {
-        let css_vars = resolved_theme_tokens().to_css_vars();
-        let shell_css = "html,body{margin:0;padding:0;background:var(--mdv-bg,#1E1E1E);color:var(--mdv-text,#F3F3F3);font-family:\"Segoe UI\",sans-serif;}.mdv-content{padding:16px;line-height:1.6;}a{color:var(--mdv-accent,#0A84FF);}code,pre{background:var(--mdv-code-bg,#2D2D2D);border-radius:6px;}pre{padding:10px;overflow:auto;}table{border-collapse:collapse;}th,td{border:1px solid var(--mdv-border,#3C3C3C);padding:6px 8px;}.mdv-error{margin:16px;padding:14px 16px;border:1px solid var(--mdv-border,#3C3C3C);border-radius:10px;background:var(--mdv-surface,#252526);}.mdv-error h1{margin:0 0 8px;font-size:18px;}.mdv-error p{margin:0 0 8px;}.mdv-error pre{margin:0;white-space:pre-wrap;word-break:break-word;}";
-
         match fs::read_to_string(path) {
-            Ok(markdown) => {
-                let rendered = MarkdownEngine::default().render(&markdown);
-                format!(
-                    "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light dark\"><base href=\"http://mdview.local/\" /><style>{css_vars}</style><style>{shell_css}</style></head><body><article class=\"mdv-content\">{}</article></body></html>",
-                    rendered.html
-                )
+            Ok(text) => {
+                if text.len() > 8000 {
+                    format!("{}\n\n[mdview: truncated]", &text[..8000])
+                } else {
+                    text
+                }
             }
-            Err(err) => {
-                let escaped_path = escape_html(path);
-                let escaped_error = escape_html(&err.to_string());
-                format!(
-                    "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light dark\"><base href=\"http://mdview.local/\" /><style>{css_vars}</style><style>{shell_css}</style></head><body><section class=\"mdv-error\"><h1>Unable to preview Markdown file</h1><p>The file could not be read. Text preview is unavailable for this item.</p><pre>Path: {escaped_path}\nError: {escaped_error}</pre></section></body></html>"
-                )
-            }
+            Err(e) => format!("[mdview] Cannot read {path}: {e}"),
         }
     }
 
-    fn escape_html(value: &str) -> String {
-        value
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace('\'', "&#39;")
-    }
-
-    fn paint_parent_background(parent_hwnd: HWND) {
-        let tokens = resolved_theme_tokens();
-        let Some(color) = parse_hex_rgb_colorref(&tokens.bg) else {
-            return;
+    // -----------------------------------------------------------------------
+    // Logging — tries Low-IL path first, then normal temp.
+    // -----------------------------------------------------------------------
+    fn log(msg: &str) {
+        let candidates: Vec<std::path::PathBuf> = {
+            let mut v = Vec::new();
+            if let Ok(up) = env::var("USERPROFILE") {
+                let base = std::path::PathBuf::from(&up)
+                    .join("AppData").join("Local").join("Temp");
+                v.push(base.join("Low").join("mdview-preview.log"));
+                v.push(base.join("mdview-preview.log"));
+            }
+            v.push(env::temp_dir().join("mdview-preview.log"));
+            v
         };
-
-        unsafe {
-            let dc = GetDC(Some(parent_hwnd));
-            if dc.is_invalid() {
+        for path in &candidates {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(f, "{msg}");
                 return;
             }
-
-            let mut rect = RECT::default();
-            if GetClientRect(parent_hwnd, &mut rect).is_err() {
-                let _ = ReleaseDC(Some(parent_hwnd), dc);
-                return;
-            }
-
-            let brush: HBRUSH = CreateSolidBrush(color);
-            if !brush.is_invalid() {
-                let _ = FillRect(dc, &rect, brush);
-                let _ = DeleteObject(brush.into());
-                let _ = InvalidateRect(Some(parent_hwnd), Some(&rect as *const RECT), false);
-            }
-
-            let _ = ReleaseDC(Some(parent_hwnd), dc);
         }
     }
 
-    fn resolved_theme_tokens() -> base_styles::ThemeTokens {
-        let snapshot = resolve_theme_snapshot(current_snapshot());
-        tokens_from_snapshot(&snapshot)
-    }
-
-    fn parse_hex_rgb_colorref(value: &str) -> Option<COLORREF> {
-        let hex = value.strip_prefix('#')?;
-        if hex.len() != 6 {
-            return None;
-        }
-
-        let rgb = u32::from_str_radix(hex, 16).ok()?;
-        let r = (rgb >> 16) & 0xFF;
-        let g = (rgb >> 8) & 0xFF;
-        let b = rgb & 0xFF;
-        Some(COLORREF((b << 16) | (g << 8) | r))
-    }
-
+    // -----------------------------------------------------------------------
+    // COM boilerplate
+    // -----------------------------------------------------------------------
     #[implement(IClassFactory)]
-    struct MarkdownPreviewHandlerFactory;
+    struct PreviewHandlerFactory;
 
     #[allow(non_snake_case)]
-    impl IClassFactory_Impl for MarkdownPreviewHandlerFactory_Impl {
+    impl IClassFactory_Impl for PreviewHandlerFactory_Impl {
         fn CreateInstance(
             &self,
             punkouter: Ref<'_, IUnknown>,
@@ -352,15 +514,11 @@ mod preview_handler {
             if riid.is_null() || ppvobject.is_null() {
                 return Err(E_POINTER.into());
             }
-
             if !punkouter.is_null() {
                 return Err(CLASS_E_NOAGGREGATION.into());
             }
-
-            // Start from IUnknown and let COM query to the requested interface.
             let unknown: IUnknown = MarkdownPreviewHandler::new().into();
-            let hr = unsafe { unknown.query(riid, ppvobject) };
-            hr.ok()
+            unsafe { unknown.query(riid, ppvobject).ok() }
         }
 
         fn LockServer(&self, flock: BOOL) -> Result<()> {
@@ -375,11 +533,8 @@ mod preview_handler {
 
     #[no_mangle]
     pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-        if ACTIVE_OBJECTS.load(Ordering::SeqCst) == 0 {
-            S_OK
-        } else {
-            S_FALSE
-        }
+        log("DllCanUnloadNow");
+        if ACTIVE_OBJECTS.load(Ordering::SeqCst) == 0 { S_OK } else { S_FALSE }
     }
 
     #[no_mangle]
@@ -388,23 +543,18 @@ mod preview_handler {
         riid: *const GUID,
         ppv: *mut *mut c_void,
     ) -> HRESULT {
-        let _ = PREVIEW_HANDLER_PROGID;
+        log("DllGetClassObject");
         if rclsid.is_null() || riid.is_null() || ppv.is_null() {
             return E_INVALIDARG;
         }
-
         unsafe {
             if *rclsid != PREVIEW_HANDLER_CLSID {
                 return CLASS_E_CLASSNOTAVAILABLE;
             }
         }
-
-        let factory: IClassFactory = MarkdownPreviewHandlerFactory.into();
+        let factory: IClassFactory = PreviewHandlerFactory.into();
         unsafe { factory.query(riid, ppv) }
     }
-
-    #[allow(dead_code)]
-    fn _assert_types(_: Option<IClassFactory>, _: Option<IInitializeWithFile>, _: Option<IPreviewHandler>) {}
 }
 
 #[cfg(not(windows))]

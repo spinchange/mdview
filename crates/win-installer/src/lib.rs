@@ -14,6 +14,7 @@ mod windows_impl {
     const PREVIEW_HANDLER_PROGID: &str = "mdview.PreviewHandler";
     const PREVIEW_HANDLER_NAME: &str = "mdview Markdown Preview Handler";
     const PREVIEW_HANDLER_SHELLEX_KEY: &str = "{8895B1C6-B41F-4C1C-A562-0D564250836F}";
+    const PREVHOST_APPID: &str = "{6D2B5079-2F0B-48DD-AB7F-97CEC514D30B}";
     const CONTEXT_MENU_VERB: &str = "mdview";
     const CONTEXT_MENU_LABEL: &str = "Open with mdview";
     const MARKDOWN_PROGID: &str = "mdview.MarkdownFile";
@@ -22,6 +23,8 @@ mod windows_impl {
     const APP_REGISTERED_NAME: &str = "mdview";
     const APP_CAPABILITIES_REL_PATH: &str =
         "Software\\Classes\\Applications\\viewer-shell.exe\\Capabilities";
+    const CURRENT_VERSION_PREVIEW_HANDLERS: &str =
+        "Software\\Microsoft\\Windows\\CurrentVersion\\PreviewHandlers";
 
     #[derive(Debug)]
     pub enum InstallerError {
@@ -53,11 +56,14 @@ mod windows_impl {
     pub fn register_preview_handler() -> Result<(), InstallerError> {
         let dll_path = locate_preview_dll()?;
         let classes = classes_root()?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
         let clsid_root = format!("CLSID\\{PREVIEW_HANDLER_CLSID}");
         let (clsid_key, _) = classes.create_subkey(&clsid_root)?;
         clsid_key.set_value("", &PREVIEW_HANDLER_NAME)?;
         clsid_key.set_value("ProgID", &PREVIEW_HANDLER_PROGID)?;
+        clsid_key.set_value("AppID", &PREVHOST_APPID)?;
+        clsid_key.set_value("DisableLowILProcessIsolation", &1u32)?;
 
         let (inproc_key, _) = classes.create_subkey(format!("{clsid_root}\\InprocServer32"))?;
         inproc_key.set_value("", &dll_path.to_string_lossy().to_string())?;
@@ -69,14 +75,32 @@ mod windows_impl {
             classes.create_subkey(format!("{PREVIEW_HANDLER_PROGID}\\CLSID"))?;
         progid_clsid_key.set_value("", &PREVIEW_HANDLER_CLSID)?;
 
-        let (preview_handlers_key, _) = classes.create_subkey("PreviewHandlers")?;
+        let (preview_handlers_key, _) = hkcu.create_subkey(CURRENT_VERSION_PREVIEW_HANDLERS)?;
         preview_handlers_key.set_value(PREVIEW_HANDLER_CLSID, &PREVIEW_HANDLER_NAME)?;
 
         for ext in [".md", ".markdown"] {
             let shellex_path = format!("{ext}\\shellex\\{PREVIEW_HANDLER_SHELLEX_KEY}");
             let (shellex_key, _) = classes.create_subkey(shellex_path)?;
             shellex_key.set_value("", &PREVIEW_HANDLER_CLSID)?;
+
+            if let Ok(ext_key) = classes.open_subkey(ext) {
+                let progid: Result<String, _> = ext_key.get_value("");
+                if let Ok(progid) = progid {
+                    let progid = progid.trim();
+                    if !progid.is_empty() {
+                        let progid_shellex_path =
+                            format!("{progid}\\shellex\\{PREVIEW_HANDLER_SHELLEX_KEY}");
+                        let (progid_shellex_key, _) = classes.create_subkey(progid_shellex_path)?;
+                        progid_shellex_key.set_value("", &PREVIEW_HANDLER_CLSID)?;
+                    }
+                }
+            }
         }
+
+        let (markdown_shellex_key, _) = classes.create_subkey(format!(
+            "{MARKDOWN_PROGID}\\shellex\\{PREVIEW_HANDLER_SHELLEX_KEY}"
+        ))?;
+        markdown_shellex_key.set_value("", &PREVIEW_HANDLER_CLSID)?;
 
         Ok(())
     }
@@ -174,6 +198,14 @@ mod windows_impl {
         let _ = classes.delete_subkey_all(format!(".md\\shellex\\{PREVIEW_HANDLER_SHELLEX_KEY}"));
         let _ =
             classes.delete_subkey_all(format!(".markdown\\shellex\\{PREVIEW_HANDLER_SHELLEX_KEY}"));
+        let _ = classes.delete_subkey_all(format!(
+            "{MARKDOWN_PROGID}\\shellex\\{PREVIEW_HANDLER_SHELLEX_KEY}"
+        ));
+        for progid in ["md_auto_file", "markdown_auto_file"] {
+            let _ = classes.delete_subkey_all(format!(
+                "{progid}\\shellex\\{PREVIEW_HANDLER_SHELLEX_KEY}"
+            ));
+        }
         let _ = classes.delete_subkey_all("SystemFileAssociations\\.md\\shell\\mdview\\command");
         let _ = classes.delete_subkey_all("SystemFileAssociations\\.md\\shell\\mdview");
         let _ =
@@ -182,8 +214,8 @@ mod windows_impl {
         let _ = classes.delete_subkey_all(format!(".md\\OpenWithList\\{APP_EXE_NAME}"));
         let _ = classes.delete_subkey_all(format!(".markdown\\OpenWithList\\{APP_EXE_NAME}"));
 
-        if let Ok(preview_handlers_key) = classes.open_subkey_with_flags(
-            "PreviewHandlers",
+        if let Ok(preview_handlers_key) = hkcu.open_subkey_with_flags(
+            CURRENT_VERSION_PREVIEW_HANDLERS,
             winreg::enums::KEY_SET_VALUE,
         ) {
             let _ = preview_handlers_key.delete_value(PREVIEW_HANDLER_CLSID);
