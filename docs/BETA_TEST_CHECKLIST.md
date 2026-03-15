@@ -17,15 +17,26 @@ Use this checklist during daily beta testing to capture actionable issues quickl
 
 ## Preview Pane
 1. Enable Explorer Preview Pane and click `.md` files.
+2. First-open lifecycle: with Preview Pane initially closed, select a `.md` file, then open Preview Pane and confirm content appears.
+3. File-switch lifecycle: leave Preview Pane open and click through 3-5 different `.md` files; confirm every file renders and no blank pane appears.
+4. Unload/reopen lifecycle: close Preview Pane, reopen it, then switch files again; confirm preview still appears.
+5. Resize Explorer horizontally and vertically with Preview Pane open; confirm preview resizes and remains readable.
 2. Test file with relative image links (`./img.png`).
 3. Test malformed markdown + empty file + missing file target.
 4. Confirm fallback/error page is readable (not generic shell failure).
 5. Re-test after `--register`, Explorer restart, and reboot.
+6. If troubleshooting, capture `%LOCALAPPDATA%\Temp\Low\mdview-preview.log` or `%LOCALAPPDATA%\Temp\mdview-preview.log`.
 
 ## Live Reload + External Edit
 1. Open file in mdview and edit in VS Code/Notepad.
 2. Confirm update appears without locking/saving issues.
 3. Rapid-save 5-10 times; check no stale state or crashes.
+
+## Viewer Links
+1. Open a markdown file in mdview containing external links and `#heading` links.
+2. Click an external `https://` link; confirm it opens in the default browser.
+3. Click an internal `#heading` link; confirm it navigates within the document instead of leaving the app.
+4. Enable Quick Edit and verify heading click-to-line still works after link handling changes.
 
 ## Theme / Appearance
 1. Switch Windows light/dark mode while app is open.
