@@ -18,6 +18,8 @@ export type RenderDocumentOptions = {
   onJumpToLine?: (lineNumber: number) => void;
 };
 
+type InvokeFn = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+
 type ViewerDom = {
   shell: HTMLElement;
   toc: HTMLElement;
@@ -178,6 +180,26 @@ function restoreScrollSnapshot(article: HTMLElement, snapshot: ScrollSnapshot | 
   });
 }
 
+async function openExternalLink(url: string): Promise<void> {
+  const tauriWindow = window as Window & {
+    __TAURI__?: {
+      core?: { invoke?: InvokeFn };
+      tauri?: { invoke?: InvokeFn };
+    };
+  };
+
+  const invoke =
+    tauriWindow.__TAURI__?.core?.invoke ??
+    tauriWindow.__TAURI__?.tauri?.invoke;
+
+  if (!invoke) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  await invoke("open_external_link", { url });
+}
+
 function ensureViewerDom(container: HTMLElement): ViewerDom {
   const existingShell = container.querySelector<HTMLElement>(":scope > .mdv-shell");
   const existingToc = existingShell?.querySelector<HTMLElement>(":scope > .mdv-toc");
@@ -208,7 +230,6 @@ function ensureViewerDom(container: HTMLElement): ViewerDom {
 
   return { shell, toc, article };
 }
-
 export function renderDocument(
   container: HTMLElement,
   doc: RenderedDocument,
@@ -232,25 +253,49 @@ export function renderDocument(
 
   article.classList.toggle("mdv-content--jumpable", !!options.quickEditEnabled);
   article.onclick = null;
-  if (options.quickEditEnabled) {
-    article.onclick = (event) => {
-      const target = event.target;
-      if (!(target instanceof Element)) {
-        return;
-      }
 
-      const heading = target.closest<HTMLHeadingElement>("h1, h2, h3, h4, h5, h6");
-      if (!heading) {
-        return;
-      }
+  article.onclick = (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
 
-      const lineStart = Number(heading.getAttribute("data-line-start"));
-      if (Number.isFinite(lineStart) && lineStart > 0) {
+    const link = target.closest<HTMLAnchorElement>("a[href]");
+    if (link) {
+      const href = link.getAttribute("href") ?? "";
+      const protocol = link.protocol;
+
+      if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
         event.preventDefault();
-        options.onJumpToLine?.(lineStart);
+        void openExternalLink(link.href).catch(console.error);
+        return;
       }
-    };
-  }
+
+      if (href.startsWith("#")) {
+        const targetElement = article.querySelector<HTMLElement>(href);
+        if (targetElement) {
+          event.preventDefault();
+          targetElement.scrollIntoView({ behavior: "smooth" });
+        }
+        return;
+      }
+    }
+
+    if (!options.quickEditEnabled) {
+      return;
+    }
+
+    const heading = target.closest<HTMLHeadingElement>("h1, h2, h3, h4, h5, h6");
+    if (!heading) {
+      return;
+    }
+
+    const lineStart = Number(heading.getAttribute("data-line-start"));
+    if (Number.isFinite(lineStart) && lineStart > 0) {
+      event.preventDefault();
+      options.onJumpToLine?.(lineStart);
+    }
+  };
 
   restoreScrollSnapshot(article, scrollSnapshot);
 }

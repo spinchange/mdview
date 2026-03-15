@@ -12,6 +12,7 @@ use std::process::Command;
 
 use md_engine::{MarkdownEngine, RenderedDocument};
 use tauri::{Emitter, Manager, RunEvent};
+use tauri_plugin_shell::ShellExt;
 use win_theme_watcher::ThemeWatcher;
 
 use crate::file_watch::FileWatcherState;
@@ -31,6 +32,13 @@ fn render_markdown(markdown: String) -> RenderedDocument {
 #[tauri::command]
 fn open_default_apps_settings() -> Result<(), String> {
     open_default_apps_settings_impl()
+}
+
+#[tauri::command]
+fn open_external_link(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    app.shell()
+        .open(url, None)
+        .map_err(|err| format!("failed to open external link: {err}"))
 }
 
 #[cfg(windows)]
@@ -130,6 +138,7 @@ fn main() {
     }
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let launch_path = file_open::detect_launch_path_from_args(std::env::args_os());
             app.manage(file_open::LaunchPathState::new(launch_path));
@@ -185,7 +194,8 @@ fn main() {
             window_boot::window_ready,
             get_initial_theme_css,
             render_markdown,
-            open_default_apps_settings
+            open_default_apps_settings,
+            open_external_link
         ])
         .build(tauri::generate_context!())
         .expect("failed to build mdview shell");

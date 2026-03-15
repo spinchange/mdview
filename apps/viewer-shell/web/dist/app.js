@@ -30438,6 +30438,15 @@
       behavior: "instant"
     });
   }
+  async function openExternalLink(url) {
+    const tauriWindow = window;
+    const invoke2 = tauriWindow.__TAURI__?.core?.invoke ?? tauriWindow.__TAURI__?.tauri?.invoke;
+    if (!invoke2) {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    await invoke2("open_external_link", { url });
+  }
   function ensureViewerDom(container) {
     const existingShell = container.querySelector(":scope > .mdv-shell");
     const existingToc = existingShell?.querySelector(":scope > .mdv-toc");
@@ -30478,23 +30487,42 @@
     }
     article.classList.toggle("mdv-content--jumpable", !!options.quickEditEnabled);
     article.onclick = null;
-    if (options.quickEditEnabled) {
-      article.onclick = (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) {
-          return;
-        }
-        const heading2 = target.closest("h1, h2, h3, h4, h5, h6");
-        if (!heading2) {
-          return;
-        }
-        const lineStart = Number(heading2.getAttribute("data-line-start"));
-        if (Number.isFinite(lineStart) && lineStart > 0) {
+    article.onclick = (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const link = target.closest("a[href]");
+      if (link) {
+        const href = link.getAttribute("href") ?? "";
+        const protocol = link.protocol;
+        if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
           event.preventDefault();
-          options.onJumpToLine?.(lineStart);
+          void openExternalLink(link.href).catch(console.error);
+          return;
         }
-      };
-    }
+        if (href.startsWith("#")) {
+          const targetElement = article.querySelector(href);
+          if (targetElement) {
+            event.preventDefault();
+            targetElement.scrollIntoView({ behavior: "smooth" });
+          }
+          return;
+        }
+      }
+      if (!options.quickEditEnabled) {
+        return;
+      }
+      const heading2 = target.closest("h1, h2, h3, h4, h5, h6");
+      if (!heading2) {
+        return;
+      }
+      const lineStart = Number(heading2.getAttribute("data-line-start"));
+      if (Number.isFinite(lineStart) && lineStart > 0) {
+        event.preventDefault();
+        options.onJumpToLine?.(lineStart);
+      }
+    };
     restoreScrollSnapshot(article, scrollSnapshot);
   }
 
