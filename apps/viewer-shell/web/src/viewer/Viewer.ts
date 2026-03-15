@@ -263,13 +263,6 @@ export function renderDocument(
     const link = target.closest<HTMLAnchorElement>("a[href]");
     if (link) {
       const href = link.getAttribute("href") ?? "";
-      const protocol = link.protocol;
-
-      if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
-        event.preventDefault();
-        void openExternalLink(link.href).catch(console.error);
-        return;
-      }
 
       if (href.startsWith("#")) {
         const targetElement = article.querySelector<HTMLElement>(href);
@@ -277,6 +270,14 @@ export function renderDocument(
           event.preventDefault();
           targetElement.scrollIntoView({ behavior: "smooth" });
         }
+        return;
+      }
+
+      const protocol = link.protocol;
+
+      if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
+        event.preventDefault();
+        void openExternalLink(link.href).catch(console.error);
         return;
       }
     }

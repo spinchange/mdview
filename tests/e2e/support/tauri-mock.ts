@@ -25,6 +25,7 @@ export async function installTauriMock(page: Page): Promise<void> {
       markdown,
       savedMarkdown: markdown,
       defaultAppsOpened: false,
+      lastOpenedUrl: null as string | null,
       windowReadyCalls: 0,
       renderCallCount: 0,
       readLaunchMarkdownDelays: [] as number[],
@@ -52,7 +53,7 @@ export async function installTauriMock(page: Page): Promise<void> {
       const html: string[] = [];
 
       for (let index = 0; index < lines.length; index += 1) {
-        const line = lines[index];
+        let line = lines[index];
         const headingMatch = /^(#{1,6})\s+(.*)$/.exec(line);
         if (headingMatch) {
           const level = headingMatch[1].length;
@@ -65,12 +66,15 @@ export async function installTauriMock(page: Page): Promise<void> {
             column_start: 1,
             column_end: line.length,
           });
-          html.push(`<h${level}>${text}</h${level}>`);
+          // Process links in heading text too
+          const processedText = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+          html.push(`<h${level}>${processedText}</h${level}>`);
           continue;
         }
 
         if (line.trim().length > 0) {
-          html.push(`<p>${line}</p>`);
+          const processedLine = line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+          html.push(`<p>${processedLine}</p>`);
         }
       }
 
@@ -103,6 +107,9 @@ export async function installTauriMock(page: Page): Promise<void> {
           return Promise.resolve();
         case "open_default_apps_settings":
           state.defaultAppsOpened = true;
+          return Promise.resolve();
+        case "open_external_link":
+          state.lastOpenedUrl = String(args?.url ?? "");
           return Promise.resolve();
         case "write_launch_markdown":
           state.markdown = String(args?.markdown ?? "");
