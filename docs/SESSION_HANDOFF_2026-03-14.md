@@ -84,12 +84,9 @@
   - `large.md`
 
 ## Practical Next Step
-1. Run the generated installer manually in a normal Windows user session.
-2. Verify:
-   - install succeeds,
-   - app launches,
-   - Preview Pane works,
-   - context menu/default-app presence is correct,
-   - uninstall cleans up registration as expected,
-   - `viewer-shell.exe --register` and `viewer-shell.exe --unregister` exit with correct codes.
-3. If installer-triggered registration or unregister is flaky, inspect/fix `nsExec::ExecToLog` usage in `scripts/nsis/mdview-installer.nsi`.
+1. Follow `docs/POLISH_FINISH_ROADMAP_2026-03-15.md`.
+2. Start with Explorer preview link testing/troubleshooting:
+   - standard markdown external links,
+   - internal `#heading` links,
+   - unsupported vault-style links.
+3. After link behavior is intentionally locked down, run the packaged installer validation path end to end.
