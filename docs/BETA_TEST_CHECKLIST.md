@@ -21,10 +21,11 @@ Use this checklist during daily beta testing to capture actionable issues quickl
 3. File-switch lifecycle: leave Preview Pane open and click through 3-5 different `.md` files; confirm every file renders and no blank pane appears.
 4. Unload/reopen lifecycle: close Preview Pane, reopen it, then switch files again; confirm preview still appears.
 5. Resize Explorer horizontally and vertically with Preview Pane open; confirm preview resizes and remains readable.
-2. Test file with relative image links (`./img.png`).
-3. Test malformed markdown + empty file + missing file target.
-4. Confirm fallback/error page is readable (not generic shell failure).
-5. Re-test after `--register`, Explorer restart, and reboot.
+6. If the preview is now rendered via WebView2, verify headings/code blocks/tables are readable and not obviously broken.
+7. Test file with relative image links (`./img.png`) if that behavior is expected for the current preview implementation.
+8. Test malformed markdown + empty file + missing file target.
+9. Confirm fallback/error page is readable (not generic shell failure).
+10. Re-test after `--register`, Explorer restart, and reboot.
 6. If troubleshooting, capture `%LOCALAPPDATA%\Temp\Low\mdview-preview.log` or `%LOCALAPPDATA%\Temp\mdview-preview.log`.
 
 ## Live Reload + External Edit
@@ -48,6 +49,16 @@ Use this checklist during daily beta testing to capture actionable issues quickl
 1. Run `--unregister`; verify integration removed.
 2. Run `--register`; verify integration restored.
 3. Move/copy exe location and re-run `--register`; verify paths update.
+4. After installer-based install, verify Preview Pane, normal file-open, and app icon all still point to the installed build.
+5. After uninstall, verify Preview Pane integration and file association hooks are actually removed or restored to the prior state as intended.
+
+## Installer Runtime
+1. Run the packaged NSIS installer in a normal Windows session.
+2. Verify installed files appear under `%LOCALAPPDATA%\Programs\mdview`.
+3. Launch by double-clicking a `.md` after install; confirm the installed app opens.
+4. Open Explorer Preview Pane after install; confirm preview still works from the installed binaries.
+5. Run uninstall and confirm the installed app directory is removed.
+6. Re-check whether Explorer Preview Pane and context menu/default-app registration are cleaned up as expected after uninstall.
 
 ## Performance
 1. Cold start timing (feel + rough seconds).

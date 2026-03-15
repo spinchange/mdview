@@ -8,6 +8,8 @@ Use this checklist when changing `crates/win-preview-handler` or Explorer regist
 - Preview not returning after pane close/reopen
 - Broken sizing after Explorer window resize
 - Shell registration drift after rebuild or reinstall
+- WebView2-specific blank/white preview surface after successful handler activation
+- Regressions where rendered preview works but file-open/runtime registration no longer does
 
 ## Preconditions
 1. Build and deploy the current preview handler and viewer-shell artifacts.
@@ -15,6 +17,9 @@ Use this checklist when changing `crates/win-preview-handler` or Explorer regist
 3. Close existing `explorer.exe` / `prevhost.exe` instances only if needed for a clean retry.
 4. Keep a few sample files ready:
    - small normal markdown file
+   - markdown file with headings and internal `#anchor` links
+   - markdown file with external `https://` links
+   - markdown file with code fence + table
    - empty markdown file
    - malformed markdown file
    - large markdown file
@@ -64,11 +69,30 @@ Use this checklist when changing `crates/win-preview-handler` or Explorer regist
    - fallback/truncation behavior is readable and intentional
    - no hang on large input
 
+### Case 6: Rendered Markdown Quality
+1. Preview a file with headings, paragraphs, links, code fences, and a table.
+2. Expected:
+   - headings are visually distinct
+   - paragraphs are readable at normal pane widths
+   - code blocks are legible and contained
+   - tables are readable enough for preview use
+   - no obvious raw-HTML leakage
+
+### Case 7: Link Behavior Policy
+1. Preview a file with external `https://` links.
+2. Preview a file with internal `#heading` links.
+3. Expected:
+   - behavior matches the intended Explorer preview policy for this release
+   - links do not hang Explorer
+   - if links are intentionally inert in preview, that should be consistent
+
 ## Registration Checks
 1. Run `viewer-shell.exe --register`.
 2. Verify `.md` and `.markdown` still preview in Explorer.
 3. Restart Explorer and retest one file.
 4. Reboot or sign out/in and retest one file.
+5. Verify normal file-open still launches `mdview` and not a stale repo/dev binary.
+6. Verify icon/default-app state did not regress after preview-handler changes.
 
 ## Logs
 Look for preview handler logs in one of these locations:
@@ -91,4 +115,5 @@ Expected patterns:
 - No blank preview on file switching
 - No preview loss after unload/reopen
 - Predictable behavior on malformed/empty/large files
+- Rendered markdown is readable enough to justify WebView2 complexity
 - Registration survives rebuild/redeploy/restart cycles
