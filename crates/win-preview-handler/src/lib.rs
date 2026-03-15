@@ -37,8 +37,6 @@ mod preview_handler {
 
     pub const PREVIEW_HANDLER_CLSID: GUID =
         GUID::from_u128(0x4f831ca2_0db6_4f14_a4f2_8ab7de6f6601);
-    pub const PREVIEW_HANDLER_PROGID: &str = "mdview.PreviewHandler";
-
     // -----------------------------------------------------------------------
     // HWND wrapper that is safe to send across threads.
     // We enforce correct thread usage by design: the preview thread owns the
