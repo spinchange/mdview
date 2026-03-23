@@ -41,6 +41,34 @@ test.describe("Links", () => {
     expect(lastOpenedUrl).toBe("https://google.com/");
   });
 
+  test("opens local file urls via the local-link bridge", async ({ page }) => {
+    await setMockMarkdown(
+      page,
+      "Open [Local note](file:///C:/Users/user/Documents/other-note.md)"
+    );
+    await emitFileChanged(page);
+
+    await page.getByRole("link", { name: "Local note" }).click();
+
+    const lastOpenedLocalHref = await page.evaluate(() => {
+      return (window as any).__MDVIEW_TEST_STATE__.lastOpenedLocalHref;
+    });
+    expect(lastOpenedLocalHref).toBe("file:///C:/Users/user/Documents/other-note.md");
+  });
+
+  test("opens relative local links via the local-link bridge", async ({ page }) => {
+    await setMockMarkdown(page, "Open [Sibling](./other-note.md)");
+    await emitFileChanged(page);
+
+    await page.getByRole("link", { name: "Sibling" }).click();
+
+    const state = await page.evaluate(() => {
+      return (window as any).__MDVIEW_TEST_STATE__;
+    });
+    expect(state.lastOpenedLocalHref).toBe("./other-note.md");
+    expect(state.lastOpenedUrl).toBeNull();
+  });
+
   test("opens mailto links via Tauri shell", async ({ page }) => {
     await setMockMarkdown(page, "Contact [Support](mailto:support@example.com)");
     await emitFileChanged(page);

@@ -26,6 +26,7 @@ export async function installTauriMock(page: Page): Promise<void> {
       savedMarkdown: markdown,
       defaultAppsOpened: false,
       lastOpenedUrl: null as string | null,
+      lastOpenedLocalHref: null as string | null,
       windowReadyCalls: 0,
       renderCallCount: 0,
       readLaunchMarkdownDelays: [] as number[],
@@ -110,6 +111,9 @@ export async function installTauriMock(page: Page): Promise<void> {
           return Promise.resolve();
         case "open_external_link":
           state.lastOpenedUrl = String(args?.url ?? "");
+          return Promise.resolve();
+        case "open_local_link":
+          state.lastOpenedLocalHref = String(args?.href ?? "");
           return Promise.resolve();
         case "write_launch_markdown":
           state.markdown = String(args?.markdown ?? "");

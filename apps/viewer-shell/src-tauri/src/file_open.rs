@@ -2,10 +2,11 @@ use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
 #[derive(Debug, Clone)]
 pub struct LaunchPathState {
@@ -74,6 +75,16 @@ pub fn write_launch_markdown(
     write_markdown_file_impl(&path, &markdown)
 }
 
+#[tauri::command]
+pub fn open_local_link(
+    app: AppHandle,
+    state: State<'_, LaunchPathState>,
+    href: String,
+) -> Result<(), String> {
+    let target = resolve_local_link_target(state.path_clone().as_deref(), &href)?;
+    open_local_link_impl(&app, &target)
+}
+
 fn read_markdown_file_impl(path: &Path) -> Result<String, String> {
     if !path.exists() {
         return Err(format!("file not found: {}", path.display()));
@@ -88,6 +99,92 @@ fn read_markdown_file_impl(path: &Path) -> Result<String, String> {
     file.read_to_string(&mut content)
         .map_err(|e| format!("failed to read utf-8 markdown: {e}"))?;
     Ok(content)
+}
+
+fn resolve_local_link_target(base_path: Option<&Path>, href: &str) -> Result<PathBuf, String> {
+    let trimmed = href.trim();
+    if trimmed.is_empty() {
+        return Err("local link target is empty".to_string());
+    }
+
+    if trimmed.starts_with('#') {
+        return Err("heading links are not local file targets".to_string());
+    }
+
+    let candidate = if let Some(rest) = trimmed.strip_prefix("file:///") {
+        PathBuf::from(decode_percent_escapes(rest)?.replace('/', "\\"))
+    } else if let Some(rest) = trimmed.strip_prefix("file://") {
+        PathBuf::from(decode_percent_escapes(rest)?.replace('/', "\\"))
+    } else {
+        resolve_relative_link(base_path, &decode_percent_escapes(trimmed)?)?
+    };
+
+    if !candidate.exists() {
+        return Err(format!("file not found: {}", candidate.display()));
+    }
+
+    if candidate.is_dir() {
+        return Err(format!("path is a directory: {}", candidate.display()));
+    }
+
+    Ok(candidate)
+}
+
+fn resolve_relative_link(base_path: Option<&Path>, href: &str) -> Result<PathBuf, String> {
+    let href_path = Path::new(href);
+    if href_path.is_absolute() {
+        return Ok(href_path.to_path_buf());
+    }
+
+    let base_path = base_path.ok_or_else(|| {
+        "cannot resolve relative local link without an active launch file".to_string()
+    })?;
+    let parent = base_path.parent().ok_or_else(|| {
+        format!(
+            "cannot resolve relative local link from launch path: {}",
+            base_path.display()
+        )
+    })?;
+
+    Ok(parent.join(href_path))
+}
+
+fn decode_percent_escapes(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(format!("invalid percent-encoding in local link: {value}"));
+            }
+
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                .map_err(|_| format!("invalid percent-encoding in local link: {value}"))?;
+            let byte = u8::from_str_radix(hex, 16)
+                .map_err(|_| format!("invalid percent-encoding in local link: {value}"))?;
+            decoded.push(byte);
+            index += 3;
+            continue;
+        }
+
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8(decoded)
+        .map_err(|_| format!("local link is not valid UTF-8 after decoding: {value}"))
+}
+
+fn open_local_link_impl(_app: &AppHandle, target: &Path) -> Result<(), String> {
+    let current_exe = std::env::current_exe()
+        .map_err(|err| format!("failed to resolve mdview executable: {err}"))?;
+    Command::new(current_exe)
+        .arg(target)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("failed to open local file in mdview: {err}"))
 }
 
 fn write_markdown_file_impl(path: &Path, content: &str) -> Result<(), String> {
@@ -269,7 +366,10 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{detect_launch_path_from_args, replace_file, write_markdown_file_with};
+    use super::{
+        detect_launch_path_from_args, replace_file, resolve_local_link_target,
+        write_markdown_file_with,
+    };
 
     #[test]
     fn extracts_first_non_flag_argument() {
@@ -352,12 +452,75 @@ mod tests {
         fs::remove_file(&path).expect("cleanup markdown");
     }
 
+    #[test]
+    fn resolves_file_url_targets() {
+        let path = std::env::temp_dir().join("mdview local link target.md");
+        fs::write(&path, "test").expect("seed local link target");
+        let href = format!("file:///{}", path.to_string_lossy().replace('\\', "/"));
+
+        let resolved =
+            resolve_local_link_target(None, &href).expect("file url should resolve");
+
+        assert_eq!(resolved, path);
+        fs::remove_file(&resolved).expect("cleanup local link target");
+    }
+
+    #[test]
+    fn decodes_percent_escaped_file_url_targets() {
+        let path = std::env::temp_dir().join("mdview local escaped target.md");
+        fs::write(&path, "test").expect("seed escaped local link target");
+        let href = format!(
+            "file:///{}",
+            path.to_string_lossy().replace('\\', "/").replace(' ', "%20")
+        );
+
+        let resolved = resolve_local_link_target(None, &href)
+            .expect("percent-escaped file url should resolve");
+
+        assert_eq!(resolved, path);
+        fs::remove_file(&resolved).expect("cleanup escaped local link target");
+    }
+
+    #[test]
+    fn resolves_relative_targets_against_launch_file() {
+        let launch_dir = unique_test_dir("local-link-relative");
+        fs::create_dir_all(launch_dir.join("nested")).expect("create relative test dir");
+        let launch_path = launch_dir.join("nested").join("current.md");
+        let sibling_path = launch_dir.join("other.md");
+        fs::write(&launch_path, "launch").expect("seed launch file");
+        fs::write(&sibling_path, "target").expect("seed target file");
+
+        let resolved = resolve_local_link_target(Some(&launch_path), "../other.md")
+            .expect("relative target should resolve");
+
+        assert_eq!(
+            fs::canonicalize(resolved).expect("canonicalize resolved path"),
+            fs::canonicalize(sibling_path).expect("canonicalize sibling path")
+        );
+        fs::remove_dir_all(&launch_dir).expect("cleanup relative test dir");
+    }
+
+    #[test]
+    fn rejects_relative_targets_without_launch_file() {
+        let error = resolve_local_link_target(None, "./other.md")
+            .expect_err("relative link without launch file should fail");
+        assert!(error.contains("cannot resolve relative local link"));
+    }
+
     fn unique_test_path(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
         std::env::temp_dir().join(format!("mdview-{prefix}-{nanos}.md"))
+    }
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("mdview-{prefix}-{nanos}"))
     }
 
     fn sibling_temp_files(path: &PathBuf) -> Vec<PathBuf> {

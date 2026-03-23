@@ -188,6 +188,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             file_open::get_launch_path,
+            file_open::open_local_link,
             file_open::read_launch_markdown,
             file_open::read_markdown_file,
             file_open::write_launch_markdown,

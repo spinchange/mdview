@@ -200,6 +200,44 @@ async function openExternalLink(url: string): Promise<void> {
   await invoke("open_external_link", { url });
 }
 
+function isLocalDocumentLink(href: string, link: HTMLAnchorElement): boolean {
+  if (!href || href.startsWith("#")) {
+    return false;
+  }
+
+  if (link.protocol === "http:" || link.protocol === "https:" || link.protocol === "mailto:") {
+    return false;
+  }
+
+  return (
+    href.startsWith("file:///") ||
+    href.startsWith("./") ||
+    href.startsWith("../") ||
+    href.startsWith("/") ||
+    /^[a-zA-Z]:[\\/]/.test(href)
+  );
+}
+
+async function openLocalLink(href: string): Promise<void> {
+  const tauriWindow = window as Window & {
+    __TAURI__?: {
+      core?: { invoke?: InvokeFn };
+      tauri?: { invoke?: InvokeFn };
+    };
+  };
+
+  const invoke =
+    tauriWindow.__TAURI__?.core?.invoke ??
+    tauriWindow.__TAURI__?.tauri?.invoke;
+
+  if (!invoke) {
+    window.location.href = href;
+    return;
+  }
+
+  await invoke("open_local_link", { href });
+}
+
 function ensureViewerDom(container: HTMLElement): ViewerDom {
   const existingShell = container.querySelector<HTMLElement>(":scope > .mdv-shell");
   const existingToc = existingShell?.querySelector<HTMLElement>(":scope > .mdv-toc");
@@ -278,6 +316,12 @@ export function renderDocument(
       if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
         event.preventDefault();
         void openExternalLink(link.href).catch(console.error);
+        return;
+      }
+
+      if (isLocalDocumentLink(href, link)) {
+        event.preventDefault();
+        void openLocalLink(href).catch(console.error);
         return;
       }
     }

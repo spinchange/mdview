@@ -30447,6 +30447,24 @@
     }
     await invoke2("open_external_link", { url });
   }
+  function isLocalDocumentLink(href, link) {
+    if (!href || href.startsWith("#")) {
+      return false;
+    }
+    if (link.protocol === "http:" || link.protocol === "https:" || link.protocol === "mailto:") {
+      return false;
+    }
+    return href.startsWith("file:///") || href.startsWith("./") || href.startsWith("../") || href.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(href);
+  }
+  async function openLocalLink(href) {
+    const tauriWindow = window;
+    const invoke2 = tauriWindow.__TAURI__?.core?.invoke ?? tauriWindow.__TAURI__?.tauri?.invoke;
+    if (!invoke2) {
+      window.location.href = href;
+      return;
+    }
+    await invoke2("open_local_link", { href });
+  }
   function ensureViewerDom(container) {
     const existingShell = container.querySelector(":scope > .mdv-shell");
     const existingToc = existingShell?.querySelector(":scope > .mdv-toc");
@@ -30507,6 +30525,11 @@
         if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
           event.preventDefault();
           void openExternalLink(link.href).catch(console.error);
+          return;
+        }
+        if (isLocalDocumentLink(href, link)) {
+          event.preventDefault();
+          void openLocalLink(href).catch(console.error);
           return;
         }
       }
