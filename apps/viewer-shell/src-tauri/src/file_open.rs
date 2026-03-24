@@ -2,11 +2,11 @@ use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tauri::{AppHandle, State};
+use serde::Serialize;
+use tauri::State;
 
 #[derive(Debug, Clone)]
 pub struct LaunchPathState {
@@ -77,12 +77,21 @@ pub fn write_launch_markdown(
 
 #[tauri::command]
 pub fn open_local_link(
-    app: AppHandle,
     state: State<'_, LaunchPathState>,
     href: String,
-) -> Result<(), String> {
+) -> Result<OpenedLocalLink, String> {
     let target = resolve_local_link_target(state.path_clone().as_deref(), &href)?;
-    open_local_link_impl(&app, &target)
+    let markdown = read_markdown_file_impl(&target)?;
+    Ok(OpenedLocalLink {
+        path: target.to_string_lossy().to_string(),
+        markdown,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenedLocalLink {
+    pub path: String,
+    pub markdown: String,
 }
 
 fn read_markdown_file_impl(path: &Path) -> Result<String, String> {
@@ -111,7 +120,9 @@ fn resolve_local_link_target(base_path: Option<&Path>, href: &str) -> Result<Pat
         return Err("heading links are not local file targets".to_string());
     }
 
-    let candidate = if let Some(rest) = trimmed.strip_prefix("file:///") {
+    let candidate = if let Some(rest) = trimmed.strip_prefix("mdview-local://") {
+        PathBuf::from(decode_percent_escapes(rest)?.replace('/', "\\"))
+    } else if let Some(rest) = trimmed.strip_prefix("file:///") {
         PathBuf::from(decode_percent_escapes(rest)?.replace('/', "\\"))
     } else if let Some(rest) = trimmed.strip_prefix("file://") {
         PathBuf::from(decode_percent_escapes(rest)?.replace('/', "\\"))
@@ -175,16 +186,6 @@ fn decode_percent_escapes(value: &str) -> Result<String, String> {
 
     String::from_utf8(decoded)
         .map_err(|_| format!("local link is not valid UTF-8 after decoding: {value}"))
-}
-
-fn open_local_link_impl(_app: &AppHandle, target: &Path) -> Result<(), String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|err| format!("failed to resolve mdview executable: {err}"))?;
-    Command::new(current_exe)
-        .arg(target)
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| format!("failed to open local file in mdview: {err}"))
 }
 
 fn write_markdown_file_impl(path: &Path, content: &str) -> Result<(), String> {

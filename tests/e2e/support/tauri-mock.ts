@@ -114,7 +114,10 @@ export async function installTauriMock(page: Page): Promise<void> {
           return Promise.resolve();
         case "open_local_link":
           state.lastOpenedLocalHref = String(args?.href ?? "");
-          return Promise.resolve();
+          return Promise.resolve({
+            path: String(args?.href ?? ""),
+            markdown: `Opened local link: ${String(args?.href ?? "")}`,
+          });
         case "write_launch_markdown":
           state.markdown = String(args?.markdown ?? "");
           state.savedMarkdown = state.markdown;

@@ -30447,23 +30447,8 @@
     }
     await invoke2("open_external_link", { url });
   }
-  function isLocalDocumentLink(href, link) {
-    if (!href || href.startsWith("#")) {
-      return false;
-    }
-    if (link.protocol === "http:" || link.protocol === "https:" || link.protocol === "mailto:") {
-      return false;
-    }
-    return href.startsWith("file:///") || href.startsWith("./") || href.startsWith("../") || href.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(href);
-  }
-  async function openLocalLink(href) {
-    const tauriWindow = window;
-    const invoke2 = tauriWindow.__TAURI__?.core?.invoke ?? tauriWindow.__TAURI__?.tauri?.invoke;
-    if (!invoke2) {
-      window.location.href = href;
-      return;
-    }
-    await invoke2("open_local_link", { href });
+  function isExternalLink(href) {
+    return href.startsWith("http://") || href.startsWith("https://") || href.startsWith("mailto:");
   }
   function ensureViewerDom(container) {
     const existingShell = container.querySelector(":scope > .mdv-shell");
@@ -30521,15 +30506,14 @@
           }
           return;
         }
-        const protocol = link.protocol;
-        if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
+        if (isExternalLink(href)) {
           event.preventDefault();
           void openExternalLink(link.href).catch(console.error);
           return;
         }
-        if (isLocalDocumentLink(href, link)) {
+        if (href.length > 0) {
           event.preventDefault();
-          void openLocalLink(href).catch(console.error);
+          options.onOpenLocalLink?.(href);
           return;
         }
       }
@@ -30707,7 +30691,7 @@ Clicking headings can map to source lines with \`data-line-start\`.
     if (!(domRefs.viewerHost instanceof HTMLElement) || !appState.renderedDocument) {
       return;
     }
-    renderDocument(domRefs.viewerHost, appState.renderedDocument, {
+    const options = {
       quickEditEnabled: appState.quickEditEnabled,
       onJumpToLine: (lineNumber) => {
         if (appState.quickEditEnabled && editorView) {
@@ -30717,13 +30701,49 @@ Clicking headings can map to source lines with \`data-line-start\`.
         appState.quickEditEnabled = true;
         appState.pendingJumpLine = lineNumber;
         renderApp();
+      },
+      onOpenLocalLink: (href) => {
+        void openLocalDocumentLink(href).catch((error) => {
+          const message = describeError(error);
+          console.error("failed to open local link", { href, error });
+          window.alert(`Failed to open local link:
+${href}
+
+${message}`);
+        });
       }
-    });
+    };
+    renderDocument(domRefs.viewerHost, appState.renderedDocument, options);
   }
   async function rerenderSource() {
     appState.renderedDocument = await invoke("render_markdown", {
       markdown: appState.sourceMarkdown
     });
+  }
+  function describeError(error) {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    if (typeof error === "string" && error.length > 0) {
+      return error;
+    }
+    return "Unknown error";
+  }
+  async function openLocalDocumentLink(href) {
+    const opened = await invoke("open_local_link", { href });
+    appState.launchPath = opened.path;
+    appState.sourceMarkdown = opened.markdown;
+    appState.renderedDocument = await invoke("render_markdown", {
+      markdown: appState.sourceMarkdown
+    });
+    appState.previewPending = false;
+    appState.saveError = null;
+    appState.externalReloadBlocked = false;
+    refreshSearchState();
+    if (editorView && editorView.state.doc.toString() !== appState.sourceMarkdown) {
+      replaceEditorDocument(appState.sourceMarkdown);
+    }
+    renderApp();
   }
   function schedulePreviewRefresh() {
     appState.previewPending = true;

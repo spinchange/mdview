@@ -4352,6 +4352,7 @@ dependencies = [
  "line-index",
  "md-engine",
  "notify",
+ "serde",
  "settings-store",
  "tauri",
  "tauri-build",

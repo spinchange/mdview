@@ -1,4 +1,4 @@
-use comrak::nodes::{AstNode, NodeCode, NodeHeading, NodeValue};
+use comrak::nodes::{AstNode, NodeCode, NodeHeading, NodeLink, NodeValue};
 use comrak::{format_html, parse_document, Arena, ComrakOptions};
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +53,7 @@ impl MarkdownEngine {
 
         let arena = Arena::new();
         let root = parse_document(&arena, source, &self.options);
+        rewrite_local_file_links(root);
 
         let mut html_bytes = Vec::new();
         format_html(root, &self.options, &mut html_bytes).expect("failed to render markdown");
@@ -101,6 +102,19 @@ fn normalize_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn rewrite_local_file_links<'a>(root: &'a AstNode<'a>) {
+    walk(root, &mut |node| {
+        let mut data = node.data.borrow_mut();
+        if let NodeValue::Link(NodeLink { url, .. }) = &mut data.value {
+            if let Some(rest) = url.strip_prefix("file:///") {
+                *url = format!("mdview-local://{rest}");
+            } else if let Some(rest) = url.strip_prefix("file://") {
+                *url = format!("mdview-local://{rest}");
+            }
+        }
+    });
+}
+
 fn walk<'a>(node: &'a AstNode<'a>, f: &mut impl FnMut(&'a AstNode<'a>)) {
     f(node);
     for child in node.children() {
@@ -140,5 +154,14 @@ mod tests {
         assert!(rendered.is_blank);
         assert!(rendered.html.is_empty());
         assert!(rendered.headings.is_empty());
+    }
+
+    #[test]
+    fn preserves_local_file_links_with_internal_scheme() {
+        let rendered = MarkdownEngine::default().render(
+            "[Local](file:///C:/Users/test/Documents/Another%20note.txt)",
+        );
+
+        assert!(rendered.html.contains("href=\"mdview-local://C:/Users/test/Documents/Another%20note.txt\""));
     }
 }

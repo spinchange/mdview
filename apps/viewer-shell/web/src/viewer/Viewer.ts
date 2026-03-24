@@ -16,6 +16,7 @@ export type RenderedDocument = {
 export type RenderDocumentOptions = {
   quickEditEnabled?: boolean;
   onJumpToLine?: (lineNumber: number) => void;
+  onOpenLocalLink?: (href: string) => void;
 };
 
 type InvokeFn = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -200,42 +201,12 @@ async function openExternalLink(url: string): Promise<void> {
   await invoke("open_external_link", { url });
 }
 
-function isLocalDocumentLink(href: string, link: HTMLAnchorElement): boolean {
-  if (!href || href.startsWith("#")) {
-    return false;
-  }
-
-  if (link.protocol === "http:" || link.protocol === "https:" || link.protocol === "mailto:") {
-    return false;
-  }
-
+function isExternalLink(href: string): boolean {
   return (
-    href.startsWith("file:///") ||
-    href.startsWith("./") ||
-    href.startsWith("../") ||
-    href.startsWith("/") ||
-    /^[a-zA-Z]:[\\/]/.test(href)
+    href.startsWith("http://") ||
+    href.startsWith("https://") ||
+    href.startsWith("mailto:")
   );
-}
-
-async function openLocalLink(href: string): Promise<void> {
-  const tauriWindow = window as Window & {
-    __TAURI__?: {
-      core?: { invoke?: InvokeFn };
-      tauri?: { invoke?: InvokeFn };
-    };
-  };
-
-  const invoke =
-    tauriWindow.__TAURI__?.core?.invoke ??
-    tauriWindow.__TAURI__?.tauri?.invoke;
-
-  if (!invoke) {
-    window.location.href = href;
-    return;
-  }
-
-  await invoke("open_local_link", { href });
 }
 
 function ensureViewerDom(container: HTMLElement): ViewerDom {
@@ -311,17 +282,15 @@ export function renderDocument(
         return;
       }
 
-      const protocol = link.protocol;
-
-      if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
+      if (isExternalLink(href)) {
         event.preventDefault();
         void openExternalLink(link.href).catch(console.error);
         return;
       }
 
-      if (isLocalDocumentLink(href, link)) {
+      if (href.length > 0) {
         event.preventDefault();
-        void openLocalLink(href).catch(console.error);
+        options.onOpenLocalLink?.(href);
         return;
       }
     }

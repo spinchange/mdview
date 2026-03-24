@@ -12,6 +12,11 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { renderDocument, type RenderedDocument } from "./viewer/Viewer";
 
+type OpenedLocalLink = {
+  path: string;
+  markdown: string;
+};
+
 const THEME_STYLE_ID = "mdview-theme-tokens";
 const THEME_EVENT = "mdview://theme-updated";
 const FILE_CHANGED_EVENT = "mdview://file-changed";
@@ -253,7 +258,7 @@ function renderViewerHost(): void {
     return;
   }
 
-  renderDocument(domRefs.viewerHost, appState.renderedDocument, {
+  const options = {
     quickEditEnabled: appState.quickEditEnabled,
     onJumpToLine: (lineNumber) => {
       if (appState.quickEditEnabled && editorView) {
@@ -265,13 +270,53 @@ function renderViewerHost(): void {
       appState.pendingJumpLine = lineNumber;
       renderApp();
     },
-  });
+    onOpenLocalLink: (href: string) => {
+      void openLocalDocumentLink(href).catch((error) => {
+        const message = describeError(error);
+        console.error("failed to open local link", { href, error });
+        window.alert(`Failed to open local link:\n${href}\n\n${message}`);
+      });
+    },
+  };
+
+  renderDocument(domRefs.viewerHost, appState.renderedDocument, options);
 }
 
 async function rerenderSource(): Promise<void> {
   appState.renderedDocument = await invoke<RenderedDocument>("render_markdown", {
     markdown: appState.sourceMarkdown,
   });
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  if (typeof error === "string" && error.length > 0) {
+    return error;
+  }
+
+  return "Unknown error";
+}
+
+async function openLocalDocumentLink(href: string): Promise<void> {
+  const opened = await invoke<OpenedLocalLink>("open_local_link", { href });
+  appState.launchPath = opened.path;
+  appState.sourceMarkdown = opened.markdown;
+  appState.renderedDocument = await invoke<RenderedDocument>("render_markdown", {
+    markdown: appState.sourceMarkdown,
+  });
+  appState.previewPending = false;
+  appState.saveError = null;
+  appState.externalReloadBlocked = false;
+  refreshSearchState();
+
+  if (editorView && editorView.state.doc.toString() !== appState.sourceMarkdown) {
+    replaceEditorDocument(appState.sourceMarkdown);
+  }
+
+  renderApp();
 }
 
 function schedulePreviewRefresh(): void {
