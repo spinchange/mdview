@@ -54,6 +54,9 @@ test.describe("Links", () => {
       return (window as any).__MDVIEW_TEST_STATE__.lastOpenedLocalHref;
     });
     expect(lastOpenedLocalHref).toBe("file:///C:/Users/user/Documents/other-note.md");
+    await expect(page.locator(".mdv-content")).toContainText(
+      "Opened local link: file:///C:/Users/user/Documents/other-note.md"
+    );
   });
 
   test("opens relative local links via the local-link bridge", async ({ page }) => {
@@ -67,6 +70,9 @@ test.describe("Links", () => {
     });
     expect(state.lastOpenedLocalHref).toBe("./other-note.md");
     expect(state.lastOpenedUrl).toBeNull();
+    await expect(page.locator(".mdv-content")).toContainText(
+      "Opened local link: ./other-note.md"
+    );
   });
 
   test("opens mailto links via Tauri shell", async ({ page }) => {

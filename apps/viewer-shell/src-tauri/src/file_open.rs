@@ -2,30 +2,46 @@ use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
-#[derive(Debug, Clone)]
+use crate::file_watch;
+
 pub struct LaunchPathState {
-    launch_path: Option<PathBuf>,
+    launch_path: Mutex<Option<PathBuf>>,
 }
 
 impl LaunchPathState {
     pub fn new(launch_path: Option<PathBuf>) -> Self {
-        Self { launch_path }
+        Self {
+            launch_path: Mutex::new(launch_path),
+        }
     }
 
     pub fn as_string(&self) -> Option<String> {
         self.launch_path
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
             .as_ref()
             .map(|path| path.to_string_lossy().to_string())
     }
 
     pub fn path_clone(&self) -> Option<PathBuf> {
-        self.launch_path.clone()
+        self.launch_path.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    pub fn set_path(&self, path: Option<PathBuf>) -> Result<(), String> {
+        let mut guard = self
+            .launch_path
+            .lock()
+            .map_err(|_| "failed to lock launch path state".to_string())?;
+        *guard = path;
+        Ok(())
     }
 }
 
@@ -53,8 +69,8 @@ pub fn get_launch_path(state: State<'_, LaunchPathState>) -> Option<String> {
 
 #[tauri::command]
 pub fn read_launch_markdown(state: State<'_, LaunchPathState>) -> Result<Option<String>, String> {
-    match &state.launch_path {
-        Some(path) => read_markdown_file_impl(path).map(Some),
+    match state.path_clone() {
+        Some(path) => read_markdown_file_impl(&path).map(Some),
         None => Ok(None),
     }
 }
@@ -77,11 +93,14 @@ pub fn write_launch_markdown(
 
 #[tauri::command]
 pub fn open_local_link(
+    app: AppHandle,
     state: State<'_, LaunchPathState>,
     href: String,
 ) -> Result<OpenedLocalLink, String> {
     let target = resolve_local_link_target(state.path_clone().as_deref(), &href)?;
     let markdown = read_markdown_file_impl(&target)?;
+    state.set_path(Some(target.clone()))?;
+    file_watch::retarget_launch_file_watcher(&app, Some(target.clone()))?;
     Ok(OpenedLocalLink {
         path: target.to_string_lossy().to_string(),
         markdown,

@@ -147,21 +147,10 @@ fn main() {
 
             let launch_state = app.state::<file_open::LaunchPathState>();
             if let Some(path) = launch_state.path_clone() {
-                match file_watch::spawn_launch_file_watcher(app.handle().clone(), path) {
-                    Ok(handle) => {
-                        let watcher_state = app.state::<FileWatcherState>();
-                        match watcher_state.0.lock() {
-                            Ok(mut guard) => {
-                                *guard = Some(handle);
-                            }
-                            Err(_) => {
-                                eprintln!("[mdview] failed to store file watcher handle");
-                            }
-                        };
-                    }
-                    Err(err) => {
-                        eprintln!("[mdview] file watcher unavailable: {err}");
-                    }
+                if let Err(err) =
+                    file_watch::retarget_launch_file_watcher(&app.handle().clone(), Some(path))
+                {
+                    eprintln!("[mdview] file watcher unavailable: {err}");
                 }
             }
 

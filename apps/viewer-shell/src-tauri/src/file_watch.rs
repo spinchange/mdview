@@ -5,7 +5,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub const FILE_CHANGED_EVENT: &str = "mdview://file-changed";
 pub const WATCH_DEBOUNCE_MS: u64 = 100;
@@ -75,6 +75,25 @@ pub fn spawn_launch_file_watcher(app: AppHandle, target: PathBuf) -> Result<File
         stop_tx,
         worker: Some(worker),
     })
+}
+
+pub fn retarget_launch_file_watcher(app: &AppHandle, target: Option<PathBuf>) -> Result<(), String> {
+    let watcher_state = app.state::<FileWatcherState>();
+    let mut guard = watcher_state
+        .0
+        .lock()
+        .map_err(|_| "failed to lock file watcher state".to_string())?;
+
+    if let Some(handle) = guard.take() {
+        handle.stop();
+    }
+
+    if let Some(path) = target {
+        let handle = spawn_launch_file_watcher(app.clone(), path)?;
+        *guard = Some(handle);
+    }
+
+    Ok(())
 }
 
 fn build_watcher(event_tx: Sender<notify::Result<Event>>) -> Result<RecommendedWatcher, notify::Error> {
