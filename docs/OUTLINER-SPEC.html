@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outliner App Spec</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #1e1e2e;
+    --surface: #181825;
+    --surface2: #313244;
+    --border: #45475a;
+    --text: #cdd6f4;
+    --subtext: #a6adc8;
+    --muted: #6c7086;
+    --accent: #89b4fa;
+    --green: #a6e3a1;
+    --yellow: #f9e2af;
+    --red: #f38ba8;
+    --mauve: #cba6f7;
+    --teal: #94e2d5;
+    --code-bg: #11111b;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    display: flex;
+    min-height: 100vh;
+  }
+
+  /* Sidebar nav */
+  #nav {
+    width: 240px;
+    flex-shrink: 0;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 24px 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+
+  #nav .nav-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 0 20px 12px;
+  }
+
+  #nav a {
+    display: block;
+    padding: 5px 20px;
+    color: var(--subtext);
+    text-decoration: none;
+    font-size: 13px;
+    border-left: 2px solid transparent;
+    transition: color 0.1s, border-color 0.1s;
+  }
+
+  #nav a:hover {
+    color: var(--text);
+    border-left-color: var(--border);
+  }
+
+  #nav a.section {
+    color: var(--text);
+    font-weight: 500;
+    margin-top: 4px;
+  }
+
+  #nav a.sub {
+    padding-left: 32px;
+    font-size: 12px;
+  }
+
+  /* Main content */
+  main {
+    flex: 1;
+    max-width: 820px;
+    padding: 48px 56px 80px;
+  }
+
+  h1 {
+    font-size: 2em;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 8px;
+    letter-spacing: -0.02em;
+  }
+
+  .subtitle {
+    color: var(--subtext);
+    font-size: 14px;
+    margin-bottom: 48px;
+  }
+
+  h2 {
+    font-size: 1.25em;
+    font-weight: 700;
+    color: var(--accent);
+    margin: 48px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 1em;
+    font-weight: 600;
+    color: var(--mauve);
+    margin: 28px 0 10px;
+  }
+
+  p { margin-bottom: 14px; color: var(--text); }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  strong { color: var(--text); font-weight: 600; }
+
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    font-size: 13px;
+    background: var(--code-bg);
+    color: var(--teal);
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+  }
+
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--subtext);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+
+  th {
+    background: var(--surface2);
+    color: var(--subtext);
+    font-weight: 600;
+    text-align: left;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  td {
+    padding: 9px 14px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  tr:nth-child(even) td { background: var(--surface); }
+
+  /* Lists */
+  ul, ol {
+    margin: 10px 0 14px 24px;
+  }
+
+  li { margin-bottom: 5px; }
+
+  li::marker { color: var(--muted); }
+
+  /* Decision / callout blocks */
+  .decision {
+    background: var(--surface);
+    border-left: 3px solid var(--yellow);
+    border-radius: 0 6px 6px 0;
+    padding: 12px 16px;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+
+  .decision strong { color: var(--yellow); }
+
+  .rationale {
+    color: var(--subtext);
+    font-size: 13px;
+    margin-top: 6px;
+  }
+
+  /* Open questions */
+  .question {
+    background: var(--surface);
+    border-left: 3px solid var(--red);
+    border-radius: 0 6px 6px 0;
+    padding: 12px 16px;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+
+  .question .q-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--red);
+    margin-bottom: 4px;
+  }
+
+  /* Out of scope list */
+  .oos li { color: var(--muted); }
+  .oos li::marker { color: var(--border); }
+
+  /* Section divider */
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 40px 0;
+  }
+
+  /* Keybinding table — kbd styling */
+  kbd {
+    font-family: 'Cascadia Code', Consolas, monospace;
+    font-size: 12px;
+    background: var(--surface2);
+    color: var(--text);
+    padding: 2px 7px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  /* Arrows in prose */
+  .arrow { color: var(--muted); }
+
+  /* Scroll margin for anchors */
+  [id] { scroll-margin-top: 24px; }
+</style>
+</head>
+<body>
+
+<nav id="nav">
+  <div class="nav-title">Outliner Spec</div>
+  <a class="section" href="#file-format">1. File Format</a>
+  <a class="section" href="#frontmatter">2. Frontmatter Schema</a>
+  <a class="sub" href="#outline-key">2.1 outline</a>
+  <a class="sub" href="#todo-done-key">2.2 todo / done</a>
+  <a class="sub" href="#tags-key">2.3 tags</a>
+  <a class="section" href="#editor-modes">3. Editor Modes</a>
+  <a class="sub" href="#document-mode">3.1 Document Mode</a>
+  <a class="sub" href="#outline-mode">3.2 Outline Mode</a>
+  <a class="section" href="#outliner-behavior">4. Outliner Behavior</a>
+  <a class="sub" href="#fold-states">4.1 Fold States</a>
+  <a class="sub" href="#initial-fold">4.2 Initial Fold State</a>
+  <a class="sub" href="#fold-persistence">4.3 Persistence</a>
+  <a class="sub" href="#move">4.4 Move</a>
+  <a class="sub" href="#promote-demote">4.5 Promote / Demote</a>
+  <a class="sub" href="#insert-heading">4.6 Insert Heading</a>
+  <a class="section" href="#todo">5. TODO Keywords</a>
+  <a class="section" href="#tags">6. Tags</a>
+  <a class="section" href="#scheduling">7. Scheduling & Deadlines</a>
+  <a class="section" href="#drawers">8. Property Drawers</a>
+  <a class="section" href="#agenda">9. Agenda</a>
+  <a class="section" href="#keybindings">10. Keybindings</a>
+  <a class="section" href="#read-mode">11. Read Mode</a>
+  <a class="section" href="#architecture">12. Architecture</a>
+  <a class="section" href="#out-of-scope">13. Out of Scope</a>
+  <a class="section" href="#open-questions">14. Open Questions</a>
+</nav>
+
+<main>
+  <h1>Outliner App Spec</h1>
+  <p class="subtitle">A standalone, Windows-native outliner editor with Org-mode conventions,
+  built on Markdown files with YAML frontmatter. Forked from <code>mdview</code>.</p>
+
+  <hr>
+
+  <!-- 1 -->
+  <h2 id="file-format">1. File Format</h2>
+  <p>Files are plain text with a <code>.md</code> extension. YAML frontmatter delimited by
+  <code>---</code> is optional. Heading syntax uses <code>#</code> (not Org's <code>*</code>),
+  meaning files are valid, portable Markdown that renders correctly in GitHub, VS Code, and any
+  Markdown-aware tool.</p>
+  <div class="decision">
+    <strong>Decision: <code>.md</code> not <code>.org</code></strong>
+    <p class="rationale">Files are not directly openable in Emacs as Org files. If Emacs
+    compatibility becomes a requirement later, the heading syntax would need to change.
+    Accepted tradeoff.</p>
+  </div>
+
+  <hr>
+
+  <!-- 2 -->
+  <h2 id="frontmatter">2. Frontmatter Schema</h2>
+  <p>All keys are optional. A file with no frontmatter is a plain document.</p>
+<pre><code>---
+outline: true          # enables outline mode (see §3)
+startup: overview      # initial fold state on open (see §4.1)
+todo: [TODO, NEXT, WAITING]        # active-state keywords
+done: [DONE, CANCELLED]            # done-state keywords
+tags: [work, personal, someday]    # valid tags (for autocomplete)
+toc: true              # show TOC in read mode
+---</code></pre>
+
+  <h3 id="outline-key">2.1 <code>outline</code></h3>
+  <table>
+    <tr><th>Value</th><th>Meaning</th></tr>
+    <tr><td>absent / <code>false</code></td><td>Document mode. No outliner features active.</td></tr>
+    <tr><td><code>true</code></td><td>Outline mode, open fully expanded (showall).</td></tr>
+    <tr><td><code>"overview"</code></td><td>Outline mode, open with only top-level headings visible.</td></tr>
+    <tr><td><code>"contents"</code></td><td>Outline mode, open with all headings visible, body text folded.</td></tr>
+  </table>
+  <p><code>startup</code> is an alias for <code>outline</code> when the value is
+  <code>overview</code> or <code>contents</code>. If both are present, <code>outline</code> wins.</p>
+
+  <h3 id="todo-done-key">2.2 <code>todo</code> / <code>done</code></h3>
+  <p>Defines the TODO keyword sequences for this file. Keywords in <code>todo</code> are active
+  states; keywords in <code>done</code> are terminal states. If absent, the app falls back to a
+  global default (see §5.1).</p>
+
+  <h3 id="tags-key">2.3 <code>tags</code></h3>
+  <p>A list of known tags for this file. Tags not in this list are still valid — they just don't
+  get autocomplete. Tag validation is never enforced.</p>
+
+  <hr>
+
+  <!-- 3 -->
+  <h2 id="editor-modes">3. Editor Modes</h2>
+
+  <h3 id="document-mode">3.1 Document Mode (default)</h3>
+  <p>The editor behaves as a standard Markdown editor. No outliner UI, no special heading
+  behavior, no keybinding overrides. <kbd>Tab</kbd> indents normally.</p>
+
+  <h3 id="outline-mode">3.2 Outline Mode</h3>
+  <p>Activated when <code>outline</code> is <code>true</code>, <code>"overview"</code>, or
+  <code>"contents"</code> in frontmatter. In this mode:</p>
+  <ul>
+    <li>Headings (<code>#</code>–<code>######</code>) are outline nodes.</li>
+    <li>A <strong>section</strong> is a heading plus all content up to the next heading of equal
+    or higher level. This is the atomic unit for fold, move, and promote.</li>
+    <li>Body text (non-heading content) within a section travels with its heading.</li>
+    <li>Content before the first heading is <strong>preamble</strong> — preserved, never folded,
+    not part of any section.</li>
+    <li>Fold indicators appear in the gutter on heading lines.</li>
+  </ul>
+  <p>The mode does not prevent writing prose. A heading with a body of several paragraphs is
+  valid and normal.</p>
+
+  <hr>
+
+  <!-- 4 -->
+  <h2 id="outliner-behavior">4. Outliner Behavior</h2>
+
+  <h3 id="fold-states">4.1 Fold States</h3>
+  <p>Each heading cycles through three states:</p>
+  <table>
+    <tr><th>State</th><th>What is visible</th></tr>
+    <tr><td><code>FOLDED</code></td><td>Heading line only. Body text and all child headings hidden.</td></tr>
+    <tr><td><code>CHILDREN</code></td><td>Heading + direct child headings (their content folded).</td></tr>
+    <tr><td><code>SUBTREE</code></td><td>Everything under this heading, fully expanded.</td></tr>
+  </table>
+  <p><strong>Global fold states (<kbd>S-Tab</kbd>):</strong></p>
+  <table>
+    <tr><th>State</th><th>What is visible</th></tr>
+    <tr><td><code>OVERVIEW</code></td><td>Top-level headings only.</td></tr>
+    <tr><td><code>CONTENTS</code></td><td>All headings, body text folded.</td></tr>
+    <tr><td><code>SHOWALL</code></td><td>Everything expanded.</td></tr>
+  </table>
+  <p>Global state cycles: OVERVIEW <span class="arrow">→</span> CONTENTS <span class="arrow">→</span> SHOWALL <span class="arrow">→</span> OVERVIEW.</p>
+
+  <h3 id="initial-fold">4.2 Initial Fold State</h3>
+  <p>Determined by the <code>outline</code> frontmatter value on open:</p>
+  <ul>
+    <li><code>true</code> <span class="arrow">→</span> SHOWALL</li>
+    <li><code>"overview"</code> <span class="arrow">→</span> OVERVIEW</li>
+    <li><code>"contents"</code> <span class="arrow">→</span> CONTENTS</li>
+  </ul>
+
+  <h3 id="fold-persistence">4.3 Fold State Persistence</h3>
+  <div class="decision">
+    <strong>Decision: fold state is ephemeral.</strong>
+    <p class="rationale">It resets to the frontmatter default on every open. It is not saved to
+    the file or to localStorage. Saving fold state out-of-band creates a hidden dependency between
+    the app and the file. The frontmatter default is the explicit, portable, file-carried
+    specification of intent.</p>
+  </div>
+
+  <h3 id="move">4.4 Move Behavior (M-↑ / M-↓)</h3>
+  <p>Moves the current section (heading + all its content) up or down, swapping with the adjacent
+  sibling section. A sibling is a heading at the same level with the same parent.</p>
+  <p>A section cannot be moved past a heading of a different level — only past headings of equal
+  level within the same parent. If no valid swap target exists, the command is a no-op.</p>
+
+  <h3 id="promote-demote">4.5 Promote / Demote</h3>
+  <p><kbd>M-←</kbd> promotes the heading by one level (<code>##</code> <span class="arrow">→</span>
+  <code>#</code>). <kbd>M-→</kbd> demotes by one level (<code>#</code> <span class="arrow">→</span> <code>##</code>).</p>
+  <p><kbd>M-S-←</kbd> / <kbd>M-S-→</kbd> promote/demote the entire subtree — the heading and all
+  its children — adjusting all levels by the same delta.</p>
+  <p>Promoting a top-level heading (<code>#</code>) is a no-op. Demoting a heading that would push
+  any child beyond H6 is a no-op (or clamped — see <a href="#open-questions">§14 Q1</a>).</p>
+
+  <h3 id="insert-heading">4.6 Insert Heading (M-RET)</h3>
+  <ul>
+    <li>If cursor is on a heading line: inserts a new heading of the same level after the current section.</li>
+    <li>If cursor is in body text: inserts a new heading at the level of the nearest ancestor heading, after the current section.</li>
+    <li>If cursor is in preamble (before first heading): inserts a top-level heading.</li>
+  </ul>
+
+  <hr>
+
+  <!-- 5 -->
+  <h2 id="todo">5. TODO Keywords</h2>
+
+  <h3>5.1 Global Defaults</h3>
+  <p>If a file's frontmatter has no <code>todo</code>/<code>done</code> keys, the app uses:</p>
+<pre><code>todo: [TODO]
+done: [DONE]</code></pre>
+  <p>These can be changed in app settings but are not stored in any file.</p>
+
+  <h3>5.2 Syntax</h3>
+  <p>A heading is a TODO heading when its text begins with a recognized keyword, separated from
+  any <code>#</code> markers by a single space:</p>
+<pre><code>## TODO Fix the broken thing
+## DONE Write the spec
+## WAITING Hear back from Chris</code></pre>
+  <p>The keyword must be the first word of the heading text. Keywords are case-sensitive and must
+  match exactly.</p>
+
+  <h3>5.3 Rendering</h3>
+  <ul>
+    <li>Active-state keywords are rendered with a distinct color (e.g. amber).</li>
+    <li>Done-state keywords are rendered muted, with heading text de-emphasized.</li>
+    <li>Non-keyword headings render normally.</li>
+  </ul>
+
+  <h3>5.4 Cycling (C-c C-t)</h3>
+  <p>With cursor on a TODO heading, cycles through the keyword sequence in frontmatter order —
+  all <code>todo</code> keywords, then all <code>done</code> keywords, then back to no keyword.</p>
+  <p>When a heading transitions to a done-state keyword, a <code>CLOSED:</code> timestamp is
+  inserted on the first line of the body:</p>
+<pre><code>CLOSED: [2026-05-13]</code></pre>
+  <p>When it transitions away from a done state, the <code>CLOSED:</code> line is removed.</p>
+
+  <hr>
+
+  <!-- 6 -->
+  <h2 id="tags">6. Tags</h2>
+
+  <h3>6.1 Syntax</h3>
+  <p>Tags appear at the end of a heading line using Org's colon-delimited format:</p>
+<pre><code>## My Heading :work:urgent:
+## Another Heading :personal:</code></pre>
+  <p>Multiple tags are written inside a single colon-wrapped group. Each tag is alphanumeric
+  with hyphens allowed (<code>my-tag</code>). No spaces inside tags.</p>
+
+  <h3>6.2 Rendering</h3>
+  <p>In outline mode, tags are rendered as small chips/pills at the end of the heading line,
+  visually distinct from heading text.</p>
+
+  <h3>6.3 Autocomplete</h3>
+  <p>When typing <code>:</code> at the end of a heading, the editor offers autocomplete from the
+  file's <code>tags</code> frontmatter list. Tags not in the list can still be typed freely.</p>
+
+  <h3>6.4 Tag Inheritance</h3>
+  <div class="decision">
+    <strong>Decision: no tag inheritance in v1.</strong>
+    <p class="rationale">Tags apply only to the heading they are written on. Children do not
+    inherit parent tags. Inheritance requires traversing the section tree on every query and
+    adds mental model complexity. Can be added later.</p>
+  </div>
+
+  <h3>6.5 Tag Filtering</h3>
+  <p>A tag filter UI (sidebar or toolbar) lets you show only sections whose heading carries a
+  given tag. Sections not matching are hidden. Preamble is always shown.</p>
+  <div class="decision">
+    <strong>Decision: filtering is within the current file only.</strong>
+    <p class="rationale">Cross-file tag queries belong to the agenda (§9).</p>
+  </div>
+
+  <hr>
+
+  <!-- 7 -->
+  <h2 id="scheduling">7. Scheduling &amp; Deadlines</h2>
+
+  <h3>7.1 Syntax</h3>
+  <p>Scheduling timestamps appear on the first line(s) of a section's body, not on the heading
+  line itself:</p>
+<pre><code>## TODO Submit the report :work:
+SCHEDULED: &lt;2026-05-15&gt;
+DEADLINE: &lt;2026-05-20&gt;</code></pre>
+  <p>Active timestamps use angle brackets <code>&lt;&gt;</code>. Inactive timestamps (not surfaced
+  in agenda) use square brackets <code>[]</code>.</p>
+
+  <h3>7.2 Date Format</h3>
+<pre><code>&lt;YYYY-MM-DD&gt;          # date only
+&lt;YYYY-MM-DD HH:MM&gt;    # date and time</code></pre>
+  <p>Repeaters (e.g. <code>+1w</code>) are out of scope for v1.</p>
+
+  <h3>7.3 Inserting Timestamps</h3>
+  <ul>
+    <li><kbd>C-c C-s</kbd> — set/replace SCHEDULED timestamp on current heading (opens date picker)</li>
+    <li><kbd>C-c C-d</kbd> — set/replace DEADLINE timestamp on current heading (opens date picker)</li>
+  </ul>
+  <p>Date picker is a minimal inline popup, keyboard-navigable.</p>
+
+  <h3>7.4 Rendering</h3>
+  <p>In outline mode, SCHEDULED and DEADLINE lines are rendered with distinct styling (small,
+  colored, icon-prefixed) rather than as plain monospace text.</p>
+
+  <hr>
+
+  <!-- 8 -->
+  <h2 id="drawers">8. Property Drawers</h2>
+
+  <h3>8.1 Syntax</h3>
+  <p>A property drawer immediately follows a heading's SCHEDULED/DEADLINE lines (or the heading
+  itself if none), before any body prose:</p>
+<pre><code>## My Heading
+:PROPERTIES:
+:ID:       abc-123
+:EFFORT:   2h
+:CUSTOM:   any value
+:END:</code></pre>
+  <p>The drawer is bounded by <code>:PROPERTIES:</code> and <code>:END:</code>. Property keys are
+  uppercase by convention but not enforced. Values are freeform strings.</p>
+
+  <h3>8.2 Rendering &amp; Interaction</h3>
+  <ul>
+    <li>Drawers are rendered collapsed by default, showing only a <code>⋯ properties</code> indicator.</li>
+    <li>Clicking the indicator (or pressing <kbd>Tab</kbd> with cursor on the drawer) toggles expanded/collapsed.</li>
+    <li>In expanded state, properties are editable inline.</li>
+  </ul>
+
+  <h3>8.3 The <code>:ID:</code> Property</h3>
+  <p><code>:ID:</code> is reserved as a unique, stable identifier for a heading. The app can
+  generate a ULID as the ID value. No other special behavior is attached to it in v1.</p>
+
+  <hr>
+
+  <!-- 9 -->
+  <h2 id="agenda">9. Agenda</h2>
+
+  <h3>9.1 Scope</h3>
+  <p>The agenda scans a user-specified folder for <code>.md</code> files containing
+  <code>outline: true</code> (or <code>overview</code>/<code>contents</code>) in their
+  frontmatter. It collects:</p>
+  <ul>
+    <li>Headings with active TODO keywords</li>
+    <li>Headings with SCHEDULED or DEADLINE timestamps</li>
+  </ul>
+  <p>No persistent database. The scan runs on demand (or on app open if the folder is small).
+  Results are held in memory for the session.</p>
+
+  <h3>9.2 Views</h3>
+  <p><strong>TODO view</strong> — lists all TODO-keyword headings across scanned files, grouped
+  by keyword, then by file.</p>
+  <p><strong>Agenda view</strong> — a day-by-day display of SCHEDULED and DEADLINE items for a
+  configurable date range (default: 7 days centered on today). Overdue items surface at the top.</p>
+
+  <h3>9.3 Interaction</h3>
+  <p>Clicking any item in agenda view opens the source file and scrolls/focuses the relevant heading.</p>
+
+  <h3>9.4 Scan Folder</h3>
+  <p>Configured in app settings. A single folder, non-recursive by default (recursive scan is
+  opt-in). This is the only cross-file feature in v1.</p>
+
+  <hr>
+
+  <!-- 10 -->
+  <h2 id="keybindings">10. Keybindings</h2>
+  <p>All <kbd>M-</kbd> and <kbd>C-c</kbd> bindings are no-ops in document mode.</p>
+  <table>
+    <tr><th>Key</th><th>Action</th></tr>
+    <tr><td><kbd>Tab</kbd> on heading</td><td>Cycle fold state: FOLDED → CHILDREN → SUBTREE</td></tr>
+    <tr><td><kbd>Tab</kbd> in body text</td><td>Normal indent</td></tr>
+    <tr><td><kbd>Tab</kbd> on property drawer</td><td>Toggle drawer expanded/collapsed</td></tr>
+    <tr><td><kbd>S-Tab</kbd></td><td>Global fold cycle: OVERVIEW → CONTENTS → SHOWALL</td></tr>
+    <tr><td><kbd>M-↑</kbd></td><td>Move section up (swap with previous sibling)</td></tr>
+    <tr><td><kbd>M-↓</kbd></td><td>Move section down (swap with next sibling)</td></tr>
+    <tr><td><kbd>M-←</kbd></td><td>Promote heading one level</td></tr>
+    <tr><td><kbd>M-→</kbd></td><td>Demote heading one level</td></tr>
+    <tr><td><kbd>M-S-←</kbd></td><td>Promote subtree one level</td></tr>
+    <tr><td><kbd>M-S-→</kbd></td><td>Demote subtree one level</td></tr>
+    <tr><td><kbd>M-Return</kbd></td><td>Insert new heading at same level</td></tr>
+    <tr><td><kbd>C-c C-t</kbd></td><td>Cycle TODO keyword on heading</td></tr>
+    <tr><td><kbd>C-c C-s</kbd></td><td>Set SCHEDULED timestamp</td></tr>
+    <tr><td><kbd>C-c C-d</kbd></td><td>Set DEADLINE timestamp</td></tr>
+  </table>
+
+  <hr>
+
+  <!-- 11 -->
+  <h2 id="read-mode">11. Read Mode</h2>
+  <p>In outline mode, read mode always renders SHOWALL — fold state does not carry into the
+  rendered view. TODO keywords, tags, SCHEDULED/DEADLINE timestamps, and property drawers are
+  rendered with appropriate styling.</p>
+  <p><code>toc: true</code> continues to work independently of <code>outline</code>.</p>
+
+  <hr>
+
+  <!-- 12 -->
+  <h2 id="architecture">12. Architecture</h2>
+  <p><strong>Fork of <code>mdview</code></strong>, not Notepad. mdview is a Tauri 2 desktop app
+  (Windows-native) that already provides the core infrastructure this outliner needs.
+  Windows-only is an accepted constraint.</p>
+
+  <h3>What mdview already provides</h3>
+  <ul>
+    <li><strong>Tauri 2 + Rust backend</strong> — native file I/O with no dialog prompts, atomic
+    writes, file watching with debounce, dirty state tracking.</li>
+    <li><strong>CodeMirror 6</strong> — already integrated with Markdown syntax highlighting,
+    live preview, and search/replace. The Org keybinding layer goes on top.</li>
+    <li><strong><code>md-engine</code> crate (comrak-based)</strong> — Markdown parser that returns
+    heading metadata with exact source positions (<code>line_start</code>, <code>line_end</code>).
+    Extend this crate to parse TODO keywords, tags, timestamps, and property drawers.</li>
+    <li><strong>TOC sidebar</strong> — already extracts a heading tree and handles click-to-jump.
+    The outline panel is this, evolved into an interactive fold/move surface.</li>
+    <li><strong>Windows shell integration</strong> — file associations, context menu, Explorer
+    preview pane.</li>
+    <li><strong>Settings storage</strong> — <code>%APPDATA%\mdview\config.json</code> pattern
+    already established.</li>
+  </ul>
+
+  <h3>What gets added</h3>
+  <ul>
+    <li>Org-like frontmatter parsing (<code>outline</code>, <code>todo</code>, <code>done</code>, <code>tags</code> keys)</li>
+    <li>TODO keyword, tag, timestamp, and property drawer parsing in <code>md-engine</code></li>
+    <li>Outline keybindings in CodeMirror (TAB fold, M-arrows, C-c chords)</li>
+    <li>Fold state management in the frontend (ephemeral, per-session)</li>
+    <li>Gutter fold indicators on heading lines</li>
+    <li>Interactive outline panel (fold/unfold, drag-to-reorder)</li>
+    <li>Agenda view (folder scan, TODO + scheduled items aggregated)</li>
+    <li>Date picker for SCHEDULED/DEADLINE insertion</li>
+  </ul>
+
+  <h3>What does not change from mdview</h3>
+  <ul>
+    <li>Tauri 2 app shell and window boot sequence</li>
+    <li>Atomic file write and file watcher infrastructure</li>
+    <li>Live preview rendering pipeline</li>
+    <li>Search/replace panel</li>
+    <li>Theme system (CSS variables, Windows accent sync)</li>
+  </ul>
+  <p>No backend. No sync. No accounts. Files remain plain <code>.md</code> text.</p>
+
+  <hr>
+
+  <!-- 13 -->
+  <h2 id="out-of-scope">13. Explicitly Out of Scope (v1)</h2>
+  <ul class="oos">
+    <li>Tag inheritance</li>
+    <li>Repeating timestamps (<code>+1w</code>, <code>.+1d</code>, etc.)</li>
+    <li>Multiple TODO keyword sequences per file</li>
+    <li>Org tables with formula support</li>
+    <li>Org-babel (executable code blocks)</li>
+    <li>Column view</li>
+    <li>Time clocking (<code>:LOGBOOK:</code>)</li>
+    <li>Export to PDF or LaTeX</li>
+    <li>System-wide capture via tray (possible in Tauri but deferred)</li>
+    <li>Backlinks, graph view, or any cross-file index beyond the agenda scan</li>
+    <li>Inline images or attachments</li>
+  </ul>
+
+  <hr>
+
+  <!-- 14 -->
+  <h2 id="open-questions">14. Open Questions</h2>
+  <p>Genuine ambiguities requiring a decision before implementation.</p>
+
+  <div class="question">
+    <div class="q-label">Q1 — Demote clamping at H6</div>
+    If promoting/demoting a subtree would push a child heading beyond <code>######</code>,
+    should the command be a no-op (safest), or clamp children at H6 and proceed anyway?
+  </div>
+
+  <div class="question">
+    <div class="q-label">Q2 — M-RET in a folded section</div>
+    If a heading is in FOLDED state and you press <kbd>M-Return</kbd>, should the new heading
+    be inserted after the folded section (treating the whole section as a unit), or should the
+    heading unfold first?
+  </div>
+
+  <div class="question">
+    <div class="q-label">Q3 — App-level default TODO keywords</div>
+    Should the global default (<code>TODO | DONE</code>) be user-configurable in app settings,
+    or hardcoded? If configurable, where does that config live?
+  </div>
+
+  <div class="question">
+    <div class="q-label">Q4 — Agenda scan: recursive or not by default?</div>
+    Non-recursive is safer for large folders but requires the user to keep everything flat or
+    configure explicitly. Recursive with a depth limit (e.g. 3) might be more useful in practice.
+  </div>
+
+  <div class="question">
+    <div class="q-label">Q5 — Fold indicator on body-only headings</div>
+    A heading with only body text (no child headings) can still be folded. Does it show an
+    indicator? A different indicator? Or none (since it can't cycle through CHILDREN state)?
+  </div>
+
+</main>
+</body>
+</html>
