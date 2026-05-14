@@ -34,9 +34,10 @@
 - Cannot assume app process, app settings store, or long-lived session state.
 
 ### Line Mapping (`crates/line-index`)
-- Maps parsed heading/source spans to source line offsets.
-- Uses rope-based text indexing for large files and mixed newline handling.
-- Supports Viewer header click -> Editor jump-to-line bridge.
+- Provides shared source line/offset primitives for LF, CRLF, and mixed-newline documents.
+- Exposed to the shell through `line_map_bridge::line_to_offset` for future editor jump-offset commands.
+- Current heading jumps use Comrak source positions from `md-engine` and CodeMirror's document line API in the frontend.
+- Intended next integration point: route all Viewer heading -> Editor offset conversion through `line-index` so the documented bridge has one canonical mapping path.
 
 ## State Boundary (Explicit Ownership)
 
@@ -50,7 +51,7 @@
   - First paint gating.
   - Initial theme seed values.
 - Durable settings storage API shape and persistence guarantees.
-- Canonical line-map model produced from source + parser spans.
+- Heading/source metadata produced by `md-engine`, with source offset helpers supplied by `line-index`.
 
 ### Frontend-owned State
 - View presentation state:
@@ -77,16 +78,17 @@
 3. `md-engine` returns render model and heading/source metadata.
 4. Frontend renders viewer using shared styles from `base-styles`.
 5. If `Quick Edit` is enabled, editor consumes same source and line map.
-6. Viewer heading click dispatches jump command with canonical line number.
+6. Viewer heading click dispatches a source line number from the rendered heading metadata.
 
 ## Hard Constraints
 - No exclusive file locks for viewer reads.
 - Debounced file-watch update pipeline (target ~100ms).
 - Startup must avoid pre-theme white flash.
 - Preview handler must not import app-only runtime assumptions.
+- Main app rendering must avoid synchronously parsing very large files; current beta limit is 2 MB.
 
 ## Definition of Done Anchors
 - First visible frame uses correct theme + vibrancy with zero white flash.
 - Explorer Preview Pane renders markdown without starting full app.
-- Viewer heading click lands editor cursor on exact source line.
+- Viewer heading click lands editor cursor on the source line reported by the Markdown parser.
 - External editor saves do not flicker or conflict with viewer locks.

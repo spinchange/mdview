@@ -545,7 +545,17 @@ mod preview_handler {
 </head>
 <body><article class="md-body">
 {body_html}
-</article></body>
+</article>
+<script>
+document.addEventListener("click", function (event) {{
+  var link = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+  if (!link) {{
+    return;
+  }}
+  event.preventDefault();
+}});
+</script>
+</body>
 </html>"#,
             css_vars = css_vars,
             body_html = body_html,

@@ -5,22 +5,21 @@
 - Explorer Preview Pane now renders markdown through WebView2 and is visually good enough for beta use.
 - File open in the full `mdview` app is working.
 - Viewer external links are already handled in the app.
-- Main remaining polish issues are link behavior in Explorer preview, resize smoothness, and final installed-build confidence.
+- Main remaining polish issues are resize smoothness, final installed-build confidence, and manual confirmation of the now-inert Explorer preview link policy.
 
 ## Release Goal
 Ship a polished Windows beta that is stable in Explorer, predictable about links, and validated from the packaged installer path rather than only repo-local registration.
 
 ## Recommended Order
-1. Test and troubleshoot link behavior in Explorer preview.
-2. Lock the final Explorer preview link policy for this release.
-3. Smooth the most visible preview interaction rough edges.
-4. Run full installed-build validation.
-5. Decide whether to cut a broader beta release or do one last hardening pass.
+1. Manually confirm the final Explorer preview link policy from an installed build.
+2. Smooth the most visible preview interaction rough edges.
+3. Run full installed-build validation.
+4. Decide whether to cut a broader beta release or do one last hardening pass.
 
 ## Workstream 1: Explorer Preview Links
 
 ### Goal
-Make link behavior in the Explorer preview intentional and stable instead of accidental.
+Keep link behavior in the Explorer preview intentional and stable. Current beta policy: all anchor clicks inside the Explorer preview are cancelled in the preview page. Links may render visually, but they must not navigate WebView2 inside Explorer.
 
 ### What to test first
 - Standard markdown external links:
@@ -37,30 +36,19 @@ Make link behavior in the Explorer preview intentional and stable instead of acc
   - bare URLs
 
 ### Questions to answer
-- Are standard markdown links actually rendered as `<a>` in the Explorer preview?
-- If clicked, do external links:
-  - open externally,
-  - stay inert,
-  - or attempt WebView2 navigation inside the preview?
-- If clicked, do internal `#heading` links:
-  - scroll in-preview,
-  - do nothing cleanly,
-  - or destabilize the preview?
+- Are standard markdown links rendered as `<a>` in the Explorer preview?
+- Do external `http:`, `https:`, and `mailto:` links stay inert when clicked?
+- Do internal `#heading` links stay inert when clicked?
 - Are non-standard vault links intentionally unsupported, or do we want a fallback rendering rule later?
 
 ### Preferred release policy
 - External `http:`, `https:`, and `mailto:` links should not navigate inside the Explorer preview.
-- Internal `#heading` links should either:
-  - scroll inside the preview cleanly, or
-  - be inert in a clearly consistent way.
+- Internal `#heading` links should be inert in the Explorer preview for this beta.
 - Unsupported link formats such as `[[wikilink]]` can remain plain text for now if they do not break rendering.
 
-### Likely implementation follow-up
-- Add a WebView2 navigation interception/cancel path in `crates/win-preview-handler/src/lib.rs`.
-- Log link/navigation attempts in the preview log while testing.
-- Decide whether external links should be:
-  - cancelled and ignored, or
-  - cancelled in-WebView and forwarded to the system browser.
+### Implementation status
+- Preview HTML now injects a click handler that prevents default navigation for `a[href]`.
+- A WebView2 `NavigationStarting` cancellation path would still be a stronger defense-in-depth follow-up if preview testing finds another navigation path.
 
 ### Exit criteria
 - Clicking links never hangs Explorer.
@@ -84,6 +72,7 @@ Reduce the rough edges that are visible now that the core WebView2 path works.
 - Large-file behavior:
   - verify truncation/readability on large markdown files,
   - confirm Explorer remains responsive.
+  - confirm the main app shows the 2 MB render-limit message instead of hanging on oversized Markdown.
 
 ### Exit criteria
 - Preview still passes `docs/PREVIEW_REGRESSION_CHECKLIST.md`.
@@ -126,11 +115,12 @@ Prove that the packaged installer path is as good as the repo-local/dev-registra
   - visible preview interaction issues.
 
 ## Immediate Next Session Checklist
-1. Use a markdown file with standard links and confirm whether the preview actually renders them as clickable anchors.
+1. Use a markdown file with standard links and confirm whether the preview renders them as anchors.
 2. Click one external link and one internal `#heading` link in Explorer preview.
 3. Observe:
-   - browser launch or no launch,
+   - no browser launch,
+   - no in-preview navigation,
    - preview stability,
    - file-switch stability afterward.
-4. If navigation is happening inside the preview or behavior is inconsistent, patch navigation interception next.
-5. After link policy is fixed, run the installed-build validation runbook end to end.
+4. Open a Markdown file over 2 MB in the main app and confirm the render-limit message appears.
+5. After link policy and large-file behavior are confirmed, run the installed-build validation runbook end to end.

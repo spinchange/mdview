@@ -51,8 +51,17 @@ impl MarkdownEngine {
             };
         }
 
+        let parse_source = mask_yaml_front_matter(source);
+        if parse_source.trim().is_empty() {
+            return RenderedDocument {
+                html: String::new(),
+                headings: Vec::new(),
+                is_blank: true,
+            };
+        }
+
         let arena = Arena::new();
-        let root = parse_document(&arena, source, &self.options);
+        let root = parse_document(&arena, &parse_source, &self.options);
         rewrite_local_file_links(root);
 
         let mut html_bytes = Vec::new();
@@ -100,6 +109,49 @@ fn heading_text<'a>(node: &'a AstNode<'a>) -> String {
 
 fn normalize_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn mask_yaml_front_matter(source: &str) -> String {
+    let Some(after_open) = source.strip_prefix("---") else {
+        return source.to_string();
+    };
+
+    if !after_open.starts_with('\n') && !after_open.starts_with("\r\n") {
+        return source.to_string();
+    }
+
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
+
+        if line_start == 0 {
+            continue;
+        }
+
+        if is_yaml_front_matter_close(line) {
+            let mut masked = String::with_capacity(source.len());
+            masked.push_str(&blank_lines_for(&source[..offset]));
+            masked.push_str(&source[offset..]);
+            return masked;
+        }
+    }
+
+    source.to_string()
+}
+
+fn is_yaml_front_matter_close(line: &str) -> bool {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    trimmed == "---" || trimmed == "..."
+}
+
+fn blank_lines_for(front_matter: &str) -> String {
+    let newline_count = front_matter.as_bytes().iter().filter(|byte| **byte == b'\n').count();
+    if newline_count == 0 {
+        String::new()
+    } else {
+        "\n".repeat(newline_count)
+    }
 }
 
 fn rewrite_local_file_links<'a>(root: &'a AstNode<'a>) {
@@ -154,6 +206,46 @@ mod tests {
         assert!(rendered.is_blank);
         assert!(rendered.html.is_empty());
         assert!(rendered.headings.is_empty());
+    }
+
+    #[test]
+    fn hides_yaml_front_matter_from_rendered_html() {
+        let doc = "---\ntitle: Hidden\nlayout: note\n---\n# Visible\nBody text\n";
+        let rendered = MarkdownEngine::default().render(doc);
+
+        assert!(!rendered.html.contains("title: Hidden"));
+        assert!(!rendered.html.contains("layout: note"));
+        assert!(rendered.html.contains("Visible"));
+        assert_eq!(rendered.headings.len(), 1);
+        assert_eq!(rendered.headings[0].line_start, 5);
+    }
+
+    #[test]
+    fn hides_crlf_yaml_front_matter_from_rendered_html() {
+        let doc = "---\r\ntitle: Hidden\r\n...\r\n# Visible\r\n";
+        let rendered = MarkdownEngine::default().render(doc);
+
+        assert!(!rendered.html.contains("title: Hidden"));
+        assert!(rendered.html.contains("Visible"));
+        assert_eq!(rendered.headings[0].line_start, 4);
+    }
+
+    #[test]
+    fn treats_front_matter_only_document_as_blank() {
+        let doc = "---\ntitle: Hidden\n---\n";
+        let rendered = MarkdownEngine::default().render(doc);
+
+        assert!(rendered.is_blank);
+        assert!(rendered.html.is_empty());
+        assert!(rendered.headings.is_empty());
+    }
+
+    #[test]
+    fn leaves_unclosed_yaml_like_block_as_markdown() {
+        let doc = "---\ntitle: Visible\n# Heading\n";
+        let rendered = MarkdownEngine::default().render(doc);
+
+        assert!(rendered.html.contains("title: Visible"));
     }
 
     #[test]

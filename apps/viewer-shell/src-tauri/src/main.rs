@@ -2,6 +2,7 @@
 
 mod file_open;
 mod file_watch;
+mod line_map_bridge;
 mod theme_bridge;
 mod window_boot;
 
@@ -19,6 +20,8 @@ use crate::file_watch::FileWatcherState;
 
 struct ThemeWatcherState(Mutex<Option<ThemeWatcher>>);
 
+const MAIN_RENDER_BYTE_LIMIT: usize = 2 * 1024 * 1024;
+
 #[tauri::command]
 fn get_initial_theme_css() -> String {
     theme_bridge::initial_tokens().to_css_vars()
@@ -26,7 +29,23 @@ fn get_initial_theme_css() -> String {
 
 #[tauri::command]
 fn render_markdown(markdown: String) -> RenderedDocument {
-    MarkdownEngine::default().render(&markdown)
+    render_markdown_impl(&markdown)
+}
+
+fn render_markdown_impl(markdown: &str) -> RenderedDocument {
+    if markdown.len() > MAIN_RENDER_BYTE_LIMIT {
+        return RenderedDocument {
+            html: format!(
+                "<p><strong>File is too large to render in mdview beta.</strong></p><p>This file is {} bytes; the current in-app render limit is {} bytes to keep the viewer responsive.</p>",
+                markdown.len(),
+                MAIN_RENDER_BYTE_LIMIT
+            ),
+            headings: Vec::new(),
+            is_blank: false,
+        };
+    }
+
+    MarkdownEngine::default().render(markdown)
 }
 
 #[tauri::command]
@@ -181,6 +200,7 @@ fn main() {
             file_open::read_launch_markdown,
             file_open::read_markdown_file,
             file_open::write_launch_markdown,
+            line_map_bridge::line_to_offset,
             window_boot::window_ready,
             get_initial_theme_css,
             render_markdown,
@@ -196,4 +216,19 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{render_markdown_impl, MAIN_RENDER_BYTE_LIMIT};
+
+    #[test]
+    fn render_markdown_impl_reports_oversized_input_without_parsing() {
+        let markdown = "a".repeat(MAIN_RENDER_BYTE_LIMIT + 1);
+        let rendered = render_markdown_impl(&markdown);
+
+        assert!(rendered.headings.is_empty());
+        assert!(!rendered.is_blank);
+        assert!(rendered.html.contains("too large to render"));
+    }
 }
